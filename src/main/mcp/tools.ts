@@ -1474,9 +1474,9 @@ const transcribeMedia: ToolDef = {
 	permission: 'edit',
 	claims: true,
 	description:
-		'Transcribe a media file again, as the Media panel\'s "Transcribe again" button does: use it when its ' +
-		'transcript FAILED (get_project or wait shows transcript: "error", for example a timeout or no API credit) ' +
-		'or never finished. It runs Gemini again and COSTS TOKENS. Starts the work and returns at once; then ' +
+		'Transcribe a media file again, as the Media panel\'s "Transcribe again" button does: use it when it has no ' +
+		'transcript (hasTranscript: false in wait or get_project), usually with a transcriptError saying why (a timeout, ' +
+		'no API credit). It runs Gemini again and COSTS TOKENS. Starts the work and returns at once; then ' +
 		'wait {for: "media"}. Refused while the file is still being transcribed, and refused for a file that ' +
 		'already has a transcript unless force is true (that replaces the transcript and its pieces; clips ' +
 		'already on the timeline keep playing the same footage).',
@@ -1497,16 +1497,20 @@ const transcribeMedia: ToolDef = {
 		if (lanes.includes('words')) {
 			throw new ToolError(`${asset.name} is being transcribed right now. wait {for: "media"} until it finishes or fails.`)
 		}
-		const words = laneRecord(asset, 'words')
-		const hasTranscript = words?.state === 'completed' && !!asset.preprocessing?.transcriptPath
+		// The same test get_project uses. Not the words lane's state: a failed
+		// transcript soft-fails (the lane ends "completed" with a transcriptError),
+		// and a lane in error can still hold an earlier, good transcript.
+		const hasTranscript = !!asset.preprocessing?.transcriptPath
 		if (hasTranscript && args.force !== true) {
 			throw new ToolError(`${asset.name} already has a transcript. Give force: true to replace it (it costs tokens again).`)
 		}
+		const words = laneRecord(asset, 'words')
 		ctx.bridge.transcribeAgain(project, asset.id)
 		return {
 			content: [json({
 				id: asset.id, name: asset.name, started: true,
-				before: words?.state ?? 'pending', previousError: words?.state === 'error' ? words.error || undefined : undefined,
+				hadTranscript: hasTranscript,
+				previousError: asset.transcriptError || (words?.state === 'error' ? words.error : undefined) || undefined,
 				next: 'wait {for: "media"} returns once the new transcript is ready (or failed again); then get_media reads it.'
 			})],
 			feed: { detail: asset.name, chips: [{ text: 'transcribing', tone: 'violet' }] }
