@@ -422,6 +422,17 @@ describe('opsToDiff / B-roll on another video track', () => {
 		expect(startOf(onNew)).toBe(7)
 	})
 
+	it('with closeGaps and a cut in one call, B-roll still follows the cut', () => {
+		const v2: Track = { id: 'v2', kind: 'video', name: 'V2', order: 1, muted: false, locked: false, hidden: false, height: 64 }
+		const over: TimelineItem = { ...main, id: 'i2', trackId: 'v2', sourceAssetId: 'b', timelineStart: 10, in: 0, out: 4, duration: 4 }
+		const result = opsToDiff({
+			closeGaps: true, removeRanges: [{ fromSec: 0, toSec: 3 }],
+			addClips: [{ assetId: 'b', sceneIndex: 2, atSec: 20, track: 'new' }]
+		}, { ...doc, tracks: [...doc.tracks, v2], timeline: [main, over] })
+		expect(result.diff.updateItems?.find((u) => u.id === 'i2')?.timelineStart).toBe(7)
+		expect(items(result).find((i) => i.sourceAssetId === 'b')!.timelineStart).toBe(17)
+	})
+
 	it('refuses a negative atSec on another track instead of appending it', () => {
 		const result = opsToDiff({ addClips: [{ assetId: 'b', sceneIndex: 1, atSec: -2, track: 'new' }] }, doc)
 		expect(items(result)).toEqual([])

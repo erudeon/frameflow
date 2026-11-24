@@ -1103,9 +1103,18 @@ export function opsToDiff(
 		const overlays = wantsCloseGaps
 			? tracksNow.filter((t) => t.kind === 'video' && t.id !== targetTrack?.id && working.some((i) => i.trackId === t.id))
 			: []
-		const moved = wantsCloseGaps
-			? packed.length > 0 && closeTimelineGaps({ tracks: tracksNow, timeline: working }, { trackIds: packed })
-			: rippleTimeline(working, changes, pinnedIds)
+		let moved: boolean
+		if (wantsCloseGaps) {
+			// The tracks it does not pack still follow this call's cuts, so they stay over the same moment.
+			const overlayIds = new Set(tracksNow.filter((t) => !packed.includes(t.id)).map((t) => t.id))
+			const rippled = rippleTimeline(
+				working.filter((i) => overlayIds.has(i.trackId)), changes.filter((c) => overlayIds.has(c.trackId)), pinnedIds
+			)
+			const closed = packed.length > 0 && closeTimelineGaps({ tracks: tracksNow, timeline: working }, { trackIds: packed })
+			moved = rippled || closed
+		} else {
+			moved = rippleTimeline(working, changes, pinnedIds)
+		}
 		if (overlays.length) notes.push(`closeGaps left ${overlays.map((t) => t.name).join(', ')} where they were: they sit over the picture.`)
 
 		if (moved) {
