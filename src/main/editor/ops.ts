@@ -125,7 +125,7 @@ export const EDITOR_OPS_SCHEMA = {
 		removeItemIds: { type: 'array', items: { type: 'string' } },
 		closeGaps: {
 			type: 'boolean',
-			description: 'Pull every clip left so each track runs back to back with no gaps. Use when the user reports a gap or empty space in the timeline.'
+			description: 'Pull every clip left so the main video track and the audio tracks run back to back with no gaps. Other video tracks (B-roll, titles, overlays) keep their times. Use when the user reports a gap or empty space in the timeline.'
 		},
 		updateItems: {
 			type: 'array',
@@ -666,6 +666,8 @@ export function opsToDiff(
 	// of EVERY track (it cut every track's items in the span), so every track
 	// closes up by the same amount and layers stay in sync with the picture.
 	const rangeChanges: RippleChange[] = []
+	/** The spans removeRanges cut, so a track this call makes ripples with every other track. */
+	const rangeSpans: { start: number; end: number }[] = []
 	const rangeShapedIds = new Set<string>()
 	const rangeRemovedIds = new Set<string>()
 	let rangeAdded: TimelineItem[] = []
@@ -699,6 +701,7 @@ export function opsToDiff(
 			rangeAdded = plan.added
 			for (const span of mergeSpans(ops.removeRanges.map((r) => ({ start: r.fromSec, end: r.toSec })))) {
 				for (const track of doc.tracks) rangeChanges.push({ trackId: track.id, at: span.start, delta: -(span.end - span.start) })
+				rangeSpans.push(span)
 			}
 			notes.push(`Cut ${plan.removedSec.toFixed(1)}s from inside ${
 				plan.updated.length + plan.removeIds.length} clip(s).`)
@@ -733,6 +736,10 @@ export function opsToDiff(
 	const allTracks = () => [...doc.tracks, ...(diff.addTracks ?? [])]
 	const laneFor = (add: { track?: string; atSec?: number; afterItemId?: string }, what: string): Track | undefined => {
 		if (add.track === undefined || add.track === null || add.track === '') return targetTrack
+		if (typeof add.atSec === 'number' && !(add.atSec >= 0)) {
+			droppedOps.push(`${what}: atSec ${add.atSec} is before the start of the timeline`)
+			return undefined
+		}
 		if (typeof add.atSec !== 'number' && !(add.afterItemId && itemIds.has(add.afterItemId))) {
 			droppedOps.push(`${what}: a clip on another track needs atSec (timeline seconds) or afterItemId`)
 			return undefined
@@ -1046,7 +1053,10 @@ export function opsToDiff(
 			at: r.timelineStart,
 			delta: -itemDuration(r)
 		})),
-		...rangeChanges
+		...rangeChanges,
+		// A track this call made did not exist when the ranges were planned: it ripples like the others,
+		// so a B-roll atSec means the same moment on a new track as on an existing one.
+		...(newTrack ? rangeSpans.map((span) => ({ trackId: newTrack!.id, at: span.start, delta: -(span.end - span.start) })) : [])
 	]
 	for (const original of doc.timeline) {
 		if (removedIds.has(original.id) || rangeShapedIds.has(original.id) || splitShapedIds.has(original.id)) continue
@@ -1086,9 +1096,17 @@ export function opsToDiff(
 		// begins exactly where the clip begins) and leave the trimmed start in place.
 		const preRipple = new Map(survivors.map((i) => [i.id, i.timelineStart]))
 
+		// closeGaps packs the main video track and the sound, never the other video tracks: B-roll,
+		// titles and overlays sit over a moment of the picture, and packing them to 0 loses it.
+		const tracksNow = [...doc.tracks, ...(diff.addTracks ?? [])]
+		const packed = tracksNow.filter((t) => t.kind !== 'video' || t.id === targetTrack?.id).map((t) => t.id)
+		const overlays = wantsCloseGaps
+			? tracksNow.filter((t) => t.kind === 'video' && t.id !== targetTrack?.id && working.some((i) => i.trackId === t.id))
+			: []
 		const moved = wantsCloseGaps
-			? closeTimelineGaps({ tracks: doc.tracks, timeline: working })
+			? packed.length > 0 && closeTimelineGaps({ tracks: tracksNow, timeline: working }, { trackIds: packed })
 			: rippleTimeline(working, changes, pinnedIds)
+		if (overlays.length) notes.push(`closeGaps left ${overlays.map((t) => t.name).join(', ')} where they were: they sit over the picture.`)
 
 		if (moved) {
 			const updates = diff.updateItems ? [...diff.updateItems] : []

@@ -404,6 +404,30 @@ describe('opsToDiff / B-roll on another video track', () => {
 		expect(unknown.droppedOps.join(' ')).toMatch(/no video track v9.*V1 \(v1\)/)
 	})
 
+	it('keeps B-roll where it was put when closeGaps runs in the same call, and says so', () => {
+		const gappy: TimelineItem = { ...main, timelineStart: 3 }
+		const result = opsToDiff({ closeGaps: true, addClips: [{ assetId: 'b', sceneIndex: 1, atSec: 5, track: 'new' }, { assetId: 'b', sceneIndex: 2, atSec: 20, track: 'new' }] }, { ...doc, timeline: [gappy] })
+		expect(items(result).map((i) => i.timelineStart)).toEqual([5, 20])
+		// The main track is still packed
+		expect(result.diff.updateItems).toEqual([{ id: 'i1', timelineStart: 0 }])
+		expect(result.notes.join(' ')).toMatch(/left V2 where they were/)
+	})
+
+	it('ripples a new track with a range cut in the same call, as an existing one does', () => {
+		const v2: Track = { id: 'v2', kind: 'video', name: 'V2', order: 1, muted: false, locked: false, hidden: false, height: 64 }
+		const onNew = opsToDiff({ removeRanges: [{ fromSec: 0, toSec: 3 }], addClips: [{ assetId: 'b', sceneIndex: 1, atSec: 10, track: 'new' }] }, doc)
+		const onOld = opsToDiff({ removeRanges: [{ fromSec: 0, toSec: 3 }], addClips: [{ assetId: 'b', sceneIndex: 1, atSec: 10, track: 'v2' }] }, { ...doc, tracks: [...doc.tracks, v2] })
+		const startOf = (r: ReturnType<typeof opsToDiff>) => items(r).find((i) => i.sourceAssetId === 'b')!.timelineStart
+		expect(startOf(onNew)).toBe(startOf(onOld))
+		expect(startOf(onNew)).toBe(7)
+	})
+
+	it('refuses a negative atSec on another track instead of appending it', () => {
+		const result = opsToDiff({ addClips: [{ assetId: 'b', sceneIndex: 1, atSec: -2, track: 'new' }] }, doc)
+		expect(items(result)).toEqual([])
+		expect(result.droppedOps.join(' ')).toMatch(/before the start/)
+	})
+
 	it('keeps a title track made in the same call in front of the new B-roll track', () => {
 		const result = opsToDiff({ addClips: [{ assetId: 'b', sceneIndex: 1, atSec: 5, track: 'new' }], addTitles: [{ text: 'Emilio', atSec: 5 }] }, doc)
 		const orders = result.diff.addTracks!.map((t) => t.order)
