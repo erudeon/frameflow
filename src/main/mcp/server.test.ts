@@ -105,7 +105,7 @@ describe('AgentServer over Streamable HTTP', () => {
 		const client = await connect()
 		const { tools } = await client.listTools()
 		expect(tools.map((t) => t.name)).toEqual([
-			'begin_round', 'end_round', 'list_projects', 'create_project', 'open_project', 'import_media', 'wait',
+			'begin_round', 'end_round', 'list_projects', 'create_project', 'open_project', 'import_media', 'transcribe_media', 'wait',
 			'get_project', 'get_timeline', 'get_media', 'inspect_media', 'find_silences', 'search_moments', 'render_frame', 'render_frames',
 			'get_motion_guide', 'get_motion_kit',
 			'get_sound_guide', 'list_sounds', 'suggest_cues', 'render_sound', 'analyze_audio', 'inspect_audio', 'generate_audio',
@@ -188,6 +188,71 @@ describe('AgentServer over Streamable HTTP', () => {
 		expect(result.isError).toBe(true)
 		expect(result.content[0].text).toMatch(/removeClips: unknown field/)
 		expect(editor.commits).toHaveLength(0)
+	})
+
+	/** What the pipeline leaves after a quota or timeout: the words lane soft-fails to completed, with no transcript and a reason. */
+	const failedTranscript = () => {
+		const asset = editor.doc.media[0]
+		asset.prepLanes = { words: { state: 'completed' }, picture: { state: 'completed' } } as any
+		asset.preprocessing = {} as any
+		asset.transcriptError = 'Gemini credits depleted'
+	}
+
+	it('transcribes a media file again after its transcript failed, as the button does', async () => {
+		const client = await connect()
+		failedTranscript()
+		const started: any = await client.callTool({ name: 'transcribe_media', arguments: { asset: 'greeting_team' } })
+		expect(started.isError).toBeFalsy()
+		expect(text(started)).toMatchObject({ id: 'team', started: true, hadTranscript: false, previousError: 'Gemini credits depleted' })
+		expect(text(started).next).toMatch(/wait \{for: "media"\}/)
+		expect(editor.transcribed).toEqual(['team'])
+
+		// While it runs, a second call is refused instead of starting another paid run
+		const again: any = await client.callTool({ name: 'transcribe_media', arguments: { asset: 'team' } })
+		expect(again.isError).toBe(true)
+		expect(again.content[0].text).toMatch(/being transcribed right now/)
+		expect(editor.transcribed).toEqual(['team'])
+	})
+
+	it('retries while only the picture lane is running, and after an interrupted run', async () => {
+		const client = await connect()
+		failedTranscript()
+		editor.lanes.set('team', ['picture'])
+		const picture: any = await client.callTool({ name: 'transcribe_media', arguments: { asset: 'team' } })
+		expect(picture.isError).toBeFalsy()
+
+		// A stored "running" with no live chain is an interrupted run: let it through
+		editor.lanes.set('team', [])
+		editor.doc.media[0].prepLanes = { words: { state: 'running' } } as any
+		const interrupted: any = await client.callTool({ name: 'transcribe_media', arguments: { asset: 'team' } })
+		expect(interrupted.isError).toBeFalsy()
+		expect(editor.transcribed).toEqual(['team', 'team'])
+	})
+
+	it('asks for force before replacing a transcript that is there, whatever the lanes say', async () => {
+		const client = await connect()
+		// An older asset without lanes whose picture failed, and one whose repair failed: both still hold a good transcript
+		for (const lanes of [undefined, { words: { state: 'error', error: 'repair failed' } }]) {
+			editor.doc.media[0].prepLanes = lanes as any
+			editor.doc.media[0].preprocessState = 'error'
+			const refused: any = await client.callTool({ name: 'transcribe_media', arguments: { asset: 'team' } })
+			expect(refused.isError).toBe(true)
+			expect(refused.content[0].text).toMatch(/already has a transcript.*force: true/)
+		}
+		expect(editor.transcribed).toEqual([])
+
+		const forced: any = await client.callTool({ name: 'transcribe_media', arguments: { asset: 'team', force: true } })
+		expect(forced.isError).toBeFalsy()
+		expect(text(forced).hadTranscript).toBe(true)
+		expect(editor.transcribed).toEqual(['team'])
+	})
+
+	it('refuses transcribe_media without edit permission', async () => {
+		permissions = { ...permissions, edit: false }
+		const client = await connect()
+		const refused: any = await client.callTool({ name: 'transcribe_media', arguments: { asset: 'team' } })
+		expect(refused.isError).toBe(true)
+		expect(editor.transcribed).toEqual([])
 	})
 
 	it('refuses a dB value sent as the linear gain instead of muting the clip', async () => {

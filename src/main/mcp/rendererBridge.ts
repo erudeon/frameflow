@@ -25,7 +25,7 @@ import fs from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { detectSilence } from '../ffmpeg'
-import { isAssetPreprocessing, preparingLanes } from '../editor/preprocess'
+import { isAssetPreprocessing, preparingLanes, preprocessMediaAsset } from '../editor/preprocess'
 import { importMediaFromFile, importMediaFromUrl } from '../editor/importMedia'
 import { computeContentEnd } from '../../shared/timeline'
 import { followObject, scanFaces, type Tile } from '../tracking'
@@ -256,6 +256,13 @@ export const rendererBridge: EditorBridge = {
 
 	preparingLanes(project, assetId) {
 		return preparingLanes(project.threadId, assetId)
+	},
+
+	transcribeAgain(project, assetId) {
+		// The same call as the "Transcribe again" button (the preprocess-media IPC).
+		preprocessMediaAsset(project.threadId, assetId, { steps: ['audio', 'transcript'] }).catch((error) => {
+			console.error(`[mcp] transcribe again failed for ${assetId}:`, error)
+		})
 	},
 
 	async findSilences(project, assetId, options) {

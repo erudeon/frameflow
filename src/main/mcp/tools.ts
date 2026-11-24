@@ -39,7 +39,7 @@ import {
 import type { EditorBridge, LiveProject } from './bridge'
 import { ROUND_IDLE_MS, type RoundBook } from '@shared/agentRounds'
 import { sheetClock } from '../editor/exportInspect'
-import { aiReady, laneStatus, mediaReadiness, prepStatus } from '@shared/mediaPrep'
+import { aiReady, laneRecord, laneStatus, mediaReadiness, prepStatus } from '@shared/mediaPrep'
 import {
 	clipSourceTime, fillGaps, thinSamples, trackOnClip, trackSpans, type ObjectTrack, type TrackSample
 } from '@shared/tracking'
@@ -1472,6 +1472,55 @@ const importMedia: ToolDef = {
 	}
 }
 
+const transcribeMedia: ToolDef = {
+	name: 'transcribe_media',
+	permission: 'edit',
+	claims: true,
+	description:
+		'Transcribe a media file again, as the Media panel\'s "Transcribe again" button does: use it when it has no ' +
+		'transcript (hasTranscript: false in wait or get_project), usually with a transcriptError saying why (a timeout, ' +
+		'no API credit). It runs Gemini again and COSTS TOKENS. Starts the work and returns at once; then ' +
+		'wait {for: "media"}. Refused while the file is still being transcribed, and refused for a file that ' +
+		'already has a transcript unless force is true (that replaces the transcript and its pieces; clips ' +
+		'already on the timeline keep playing the same footage).',
+	inputSchema: {
+		type: 'object',
+		properties: {
+			asset: { type: 'string', description: 'The media id or file name' },
+			force: { type: 'boolean', description: 'Transcribe again even though it already has a transcript (costs tokens again)' }
+		},
+		required: ['asset'],
+		additionalProperties: false
+	},
+	title: (args) => `transcribe_media ${String(args.asset ?? '').slice(0, 60)}`,
+	async run(args, ctx) {
+		const project = await requireProject(ctx)
+		const asset = resolveAsset(project.doc.media, args.asset)
+		const lanes = ctx.bridge.preparingLanes?.(project, asset.id) ?? (ctx.bridge.isPreparing(project, asset.id) ? ['words'] : [])
+		if (lanes.includes('words')) {
+			throw new ToolError(`${asset.name} is being transcribed right now. wait {for: "media"} until it finishes or fails.`)
+		}
+		// The same test get_project uses. Not the words lane's state: a failed
+		// transcript soft-fails (the lane ends "completed" with a transcriptError),
+		// and a lane in error can still hold an earlier, good transcript.
+		const hasTranscript = !!asset.preprocessing?.transcriptPath
+		if (hasTranscript && args.force !== true) {
+			throw new ToolError(`${asset.name} already has a transcript. Give force: true to replace it (it costs tokens again).`)
+		}
+		const words = laneRecord(asset, 'words')
+		ctx.bridge.transcribeAgain(project, asset.id)
+		return {
+			content: [json({
+				id: asset.id, name: asset.name, started: true,
+				hadTranscript: hasTranscript,
+				previousError: asset.transcriptError || (words?.state === 'error' ? words.error : undefined) || undefined,
+				next: 'wait {for: "media"} returns once the new transcript is ready (or failed again); then get_media reads it.'
+			})],
+			feed: { detail: asset.name, chips: [{ text: 'transcribing', tone: 'violet' }] }
+		}
+	}
+}
+
 // ===== Waiting on background work =====
 
 const WAIT_POLL_MS = 2_000
@@ -2662,7 +2711,7 @@ const editTrack: ToolDef = {
 
 
 export const TOOLS: ToolDef[] = [
-	beginRound, endRound, listProjects, createProject, openProject, importMedia, waitTool,
+	beginRound, endRound, listProjects, createProject, openProject, importMedia, transcribeMedia, waitTool,
 	getProject, getTimeline, getMedia, inspectMedia, findSilences, searchMomentsTool, renderFrame, renderFrames, getMotionGuide, getMotionKit,
 	getSoundGuide, listSounds, suggestCuesTool, renderSoundTool, analyzeAudio, inspectAudioTool, generateAudioTool,
 	applyOps, revertToVersion, exportTool, inspectExport,

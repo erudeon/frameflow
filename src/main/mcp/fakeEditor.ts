@@ -199,6 +199,19 @@ export class FakeEditor implements EditorBridge {
 		return this.preparing.has(assetId)
 	}
 
+	/** Which lanes run per media id, when a test needs one lane only; otherwise both while in `preparing`. */
+	lanes = new Map<string, Array<'words' | 'picture'>>()
+	preparingLanes(_project: LiveProject, assetId: string): Array<'words' | 'picture'> {
+		return this.lanes.get(assetId) ?? (this.preparing.has(assetId) ? ['words', 'picture'] : [])
+	}
+
+	/** Media ids transcribe_media asked to transcribe again. */
+	transcribed: string[] = []
+	transcribeAgain(_project: LiveProject, assetId: string) {
+		this.transcribed.push(assetId)
+		this.preparing.add(assetId)
+	}
+
 	/** Tracks "on disk", and what the tracking tools were asked for. */
 	tracks: ObjectTrack[] = []
 	trackRequests: Array<{ kind: 'faces' | 'object'; assetId: string; fromSec: number; toSec: number; atSec?: number }> = []
