@@ -1125,6 +1125,8 @@ export interface EditorOps {
 		atSec?: number            // placement (optional)
 		afterItemId?: string
 		label?: string
+		/** A video track id, or "new" for one in front of all others (B-roll); needs atSec or afterItemId. */
+		track?: string
 	}>
 	/**
 	 * Bulk material add: every piece from `fromScene`..`toScene` of one asset,

@@ -359,6 +359,58 @@ describe('opsToDiff / audio level', () => {
 	})
 })
 
+describe('opsToDiff / B-roll on another video track', () => {
+	const interview = makeAsset('a', [10, 10, 10])
+	const broll = makeAsset('b', [4, 4])
+	const main: TimelineItem = {
+		id: 'i1', trackId: 'v1', sourceAssetId: 'a', timelineStart: 0, in: 0, out: 30,
+		speed: 1, preservePitch: true, duration: 30
+	}
+	const doc = makeDoc([interview, broll], [main])
+
+	it('puts a clip on a new track in front of the interview, leaving the interview and the append cursor alone', () => {
+		const result = opsToDiff({ addClips: [{ assetId: 'b', sceneIndex: 1, atSec: 5, track: 'new' }, { assetId: 'b', sceneIndex: 2, atSec: 20, track: 'new' }, { assetId: 'a', sceneIndex: 1 }] }, doc)
+		expect(result.droppedOps).toEqual([])
+		expect(result.diff.addTracks).toHaveLength(1)
+		const lane = result.diff.addTracks![0]
+		expect(lane).toMatchObject({ kind: 'video', order: 1 })
+		const [first, second, appended] = items(result)
+		expect([first.trackId, first.timelineStart]).toEqual([lane.id, 5])
+		expect([second.trackId, second.timelineStart]).toEqual([lane.id, 20])
+		// The main-track append still goes after the interview, not after the B-roll
+		expect([appended.trackId, appended.timelineStart]).toEqual(['v1', 30])
+		expect(result.diff.removeItemIds).toBeUndefined()
+		expect(result.diff.updateItems).toBeUndefined()
+	})
+
+	it('uses an existing video track by id, and refuses a clash there instead of letting the overlap repair drop it', () => {
+		const v2: Track = { id: 'v2', kind: 'video', name: 'V2', order: 1, muted: false, locked: false, hidden: false, height: 64 }
+		const over: TimelineItem = { ...main, id: 'i2', trackId: 'v2', sourceAssetId: 'b', timelineStart: 10, in: 0, out: 4, duration: 4, label: 'hands' }
+		const withLane = { ...doc, tracks: [...doc.tracks, v2], timeline: [main, over] }
+		const ok = opsToDiff({ addClips: [{ assetId: 'b', sceneIndex: 2, atSec: 2, track: 'v2' }] }, withLane)
+		expect(items(ok)[0]).toMatchObject({ trackId: 'v2', timelineStart: 2 })
+		expect(ok.diff.addTracks).toBeUndefined()
+		const clash = opsToDiff({ addClips: [{ assetId: 'b', sceneIndex: 2, atSec: 12, track: 'v2' }] }, withLane)
+		expect(items(clash)).toEqual([])
+		expect(clash.droppedOps.join(' ')).toMatch(/overlap "hands" on V2/)
+	})
+
+	it('needs a time, and a real video track', () => {
+		const untimed = opsToDiff({ addClips: [{ assetId: 'b', sceneIndex: 1, track: 'new' }] }, doc)
+		expect(items(untimed)).toEqual([])
+		expect(untimed.diff.addTracks).toBeUndefined()
+		expect(untimed.droppedOps.join(' ')).toMatch(/needs atSec/)
+		const unknown = opsToDiff({ addClips: [{ assetId: 'b', sceneIndex: 1, atSec: 1, track: 'v9' }] }, doc)
+		expect(unknown.droppedOps.join(' ')).toMatch(/no video track v9.*V1 \(v1\)/)
+	})
+
+	it('keeps a title track made in the same call in front of the new B-roll track', () => {
+		const result = opsToDiff({ addClips: [{ assetId: 'b', sceneIndex: 1, atSec: 5, track: 'new' }], addTitles: [{ text: 'Emilio', atSec: 5 }] }, doc)
+		const orders = result.diff.addTracks!.map((t) => t.order)
+		expect(new Set(orders).size).toBe(orders.length)
+	})
+})
+
 describe('opsToDiff / gaps', () => {
 	/** An asset laid out contiguously on the timeline. */
 	function laidOut(asset: MediaAsset): TimelineItem[] {

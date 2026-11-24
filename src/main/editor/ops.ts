@@ -1,7 +1,7 @@
 import { v4 as uuidv4 } from 'uuid'
 import { applyFollowers, applySoundOps } from './soundOps'
 import type {
-	Clip, EditorDocument, EditorOps, MediaAsset, TimelineDiff, TimelineItem
+	Clip, EditorDocument, EditorOps, MediaAsset, TimelineDiff, TimelineItem, Track
 } from '@shared/types'
 import {
 	applyTimelineDiff, clampSpeed, closeTimelineGaps, computeContentEnd, itemDuration, itemEnd, MIN_ITEM_DURATION,
@@ -14,7 +14,7 @@ import { KEY_DEFAULTS } from '@shared/keying'
 import { GENERATOR_DEFAULTS, GENERATORS } from '@shared/generators'
 import { hasTransform, OFFSET_RANGE, SCALE_RANGE } from '@shared/transform'
 import { defaultParams, effectDef } from '@shared/effects'
-import { findTitleTrack, nextTrackOrder, TITLE_TRACK_NAME } from '@shared/tracks'
+import { findTitleTrack, nextTrackName, nextTrackOrder, TITLE_TRACK_NAME } from '@shared/tracks'
 import {
 	freeMotionTrack, isMotionTrack, lengthAfterPageChange, lintMotionHtml, motionTemplate, newMotionSpec, nextMotionTrackName, resolveDefinition,
 	sanitiseSetting, type MotionDefinition, type MotionSpec
@@ -354,7 +354,14 @@ export const EDITOR_OPS_SCHEMA = {
 					out: { type: 'number' },
 					atSec: { type: 'number' },
 					afterItemId: { type: 'string' },
-					label: { type: 'string' }
+					label: { type: 'string' },
+					track: {
+						type: 'string',
+						description: 'Which video track. Leave out for the main one. A video track id from get_timeline puts it on that lane; "new" ' +
+							'makes one video track IN FRONT of all others (every "new" in this call shares it): B-roll or a cutaway over the ' +
+							'interview, whose picture covers the main track while the main track plays on underneath. Needs atSec or afterItemId. ' +
+							'Its own sound plays too: set its gain to 0 with updateItems to keep only the interview sound.'
+					}
 				},
 				required: ['assetId']
 			}
@@ -720,6 +727,44 @@ export function opsToDiff(
 		doc.timeline.filter((i) => i.trackId === targetTrack?.id && !removed.has(i.id))
 	)
 
+	// A clip may go on another video track (B-roll over the interview). "new"
+	// makes one track in front of every video track, shared by the whole call.
+	let newTrack: Track | undefined
+	const allTracks = () => [...doc.tracks, ...(diff.addTracks ?? [])]
+	const laneFor = (add: { track?: string; atSec?: number; afterItemId?: string }, what: string): Track | undefined => {
+		if (add.track === undefined || add.track === null || add.track === '') return targetTrack
+		if (typeof add.atSec !== 'number' && !(add.afterItemId && itemIds.has(add.afterItemId))) {
+			droppedOps.push(`${what}: a clip on another track needs atSec (timeline seconds) or afterItemId`)
+			return undefined
+		}
+		if (add.track === 'new') {
+			if (!newTrack) {
+				newTrack = {
+					id: uuidv4(), kind: 'video', name: nextTrackName(allTracks(), 'video'),
+					order: nextTrackOrder(allTracks(), 'video'),
+					muted: false, locked: false, hidden: false, height: 64
+				}
+				;(diff.addTracks ||= []).push(newTrack)
+			}
+			return newTrack
+		}
+		const track = allTracks().find((t) => t.id === add.track)
+		if (!track || track.kind !== 'video') {
+			const videos = allTracks().filter((t) => t.kind === 'video').map((t) => `${t.name} (${t.id})`).join(', ')
+			droppedOps.push(`${what}: no video track ${add.track}; video tracks: ${videos || 'none'}, or "new"`)
+			return undefined
+		}
+		if (track.locked || track.hidden) {
+			droppedOps.push(`${what}: ${track.name} is ${track.locked ? 'locked' : 'hidden'}`)
+			return undefined
+		}
+		return track
+	}
+	/** What else sits on a lane over [start, end), so a clash is said instead of being dropped later by the overlap repair. */
+	const clashOn = (trackId: string, start: number, end: number): TimelineItem | undefined =>
+		[...doc.timeline.filter((i) => !removed.has(i.id)), ...adds].find((i) =>
+			i.trackId === trackId && i.timelineStart < end - 1e-6 && itemEnd(i) > start + 1e-6)
+
 	/** Explicit atSec > after a known item > append at end. */
 	const positionFor = (add: { atSec?: number; afterItemId?: string }): number => {
 		if (typeof add.atSec === 'number' && add.atSec >= 0) return add.atSec
@@ -741,7 +786,8 @@ export function opsToDiff(
 		})
 		// Keep the Math.max semantics: the cursor never moves backwards, so a stray
 		// atSec pushes later appends after it rather than creating overlaps.
-		appendCursor = Math.max(appendCursor, item.timelineStart + item.duration)
+		// Only the main track's clips move it: B-roll on another lane does not.
+		if (item.trackId === targetTrack?.id) appendCursor = Math.max(appendCursor, item.timelineStart + item.duration)
 	}
 
 	// --- addClips: individual pieces / explicit source ranges ---
@@ -751,7 +797,9 @@ export function opsToDiff(
 			droppedOps.push(`add: unknown asset ${add.assetId}`)
 			continue
 		}
-		if (!targetTrack) {
+		const lane = add.track ? laneFor(add, `add ${asset.name}`) : targetTrack
+		if (add.track && !lane) continue
+		if (!lane) {
 			droppedOps.push('add: no unlocked video track available')
 			break
 		}
@@ -787,13 +835,21 @@ export function opsToDiff(
 			continue
 		}
 
+		const start = positionFor(add)
+		if (lane.id !== targetTrack?.id) {
+			const clash = clashOn(lane.id, start, start + (sourceOut! - sourceIn!))
+			if (clash) {
+				droppedOps.push(`add ${asset.name}: it would overlap "${clash.label || clash.id}" on ${lane.name}; pick another time or track: "new"`)
+				continue
+			}
+		}
 		pushItem({
 			id: uuidv4(),
-			trackId: targetTrack.id,
+			trackId: lane.id,
 			sourceAssetId: asset.id,
 			sourceClipId,
 			masterSegmentIndex,
-			timelineStart: positionFor(add),
+			timelineStart: start,
 			in: sourceIn!,
 			out: sourceOut!,
 			speed: 1.0,
@@ -1202,7 +1258,7 @@ export function opsToDiff(
 		if (!textTrack) {
 			textTrack = {
 				id: uuidv4(), kind: 'video', name: TITLE_TRACK_NAME,
-				order: nextTrackOrder(doc.tracks, 'video'),
+				order: nextTrackOrder([...doc.tracks, ...(diff.addTracks ?? [])], 'video'),
 				muted: false, locked: false, hidden: false, height: 40
 			}
 			;(diff.addTracks ||= []).push(textTrack)

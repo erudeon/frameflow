@@ -277,6 +277,21 @@ describe('AgentServer over Streamable HTTP', () => {
 		expect(update.gainDb).toMatchObject({ minimum: -60, maximum: 6 })
 	})
 
+	it('lays B-roll on a new video track over the interview through apply_ops', async () => {
+		const client = await connect()
+		const result: any = await client.callTool({
+			name: 'apply_ops', arguments: { rationale: 'Cutaway', addClips: [{ assetId: 'team', sceneIndex: 3, atSec: 4, track: 'new' }] }
+		})
+		expect(result.isError).toBeFalsy()
+		expect(text(result).droppedOps ?? []).toEqual([])
+		const videos = editor.doc.tracks.filter((t) => t.kind === 'video').sort((a, b) => a.order - b.order)
+		expect(videos).toHaveLength(2)
+		const cutaway = editor.doc.timeline.find((i) => i.trackId === videos[1].id)!
+		expect(cutaway).toMatchObject({ timelineStart: 4, in: 20, out: 30 })
+		// The interview is untouched underneath
+		expect(editor.doc.timeline.find((i) => i.id === 'i1')).toMatchObject({ trackId: 'v1', timelineStart: 0, in: 0, out: 30 })
+	})
+
 	it('gates edits and export on the Agent access permissions', async () => {
 		const client = await connect()
 		const exported: any = await client.callTool({ name: 'export', arguments: {} })
