@@ -333,6 +333,32 @@ describe('opsToDiff / source coverage', () => {
 
 // ===== Gaps =====
 
+describe('opsToDiff / audio level', () => {
+	const asset = makeAsset('a', [10])
+	const item: TimelineItem = {
+		id: 'i1', trackId: 'v1', sourceAssetId: 'a', timelineStart: 0, in: 0, out: 10,
+		speed: 1, preservePitch: true, duration: 10
+	}
+	const doc = makeDoc([asset], [item])
+
+	it('refuses a dB value sent as gain, leaving the level as it was', () => {
+		const result = opsToDiff({ updateItems: [{ id: 'i1', gain: -3 }] }, doc)
+		expect(result.diff.updateItems).toBeUndefined()
+		expect(result.droppedOps.join('\n')).toMatch(/gain -3 is outside 0..2.*gainDb: -3/)
+	})
+
+	it('applies gainDb as a linear gain', () => {
+		const result = opsToDiff({ updateItems: [{ id: 'i1', gainDb: -6 }] }, doc)
+		expect(result.diff.updateItems?.[0].gain).toBeCloseTo(0.501, 3)
+		expect(result.droppedOps).toEqual([])
+	})
+
+	it('still applies the other fields of an update whose level is refused', () => {
+		const result = opsToDiff({ updateItems: [{ id: 'i1', gain: -3, label: 'Emilio' }] }, doc)
+		expect(result.diff.updateItems?.[0]).toEqual({ id: 'i1', label: 'Emilio' })
+	})
+})
+
 describe('opsToDiff / gaps', () => {
 	/** An asset laid out contiguously on the timeline. */
 	function laidOut(asset: MediaAsset): TimelineItem[] {
