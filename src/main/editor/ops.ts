@@ -144,7 +144,7 @@ export const EDITOR_OPS_SCHEMA = {
 					},
 					gainDb: {
 						type: 'number', minimum: -60, maximum: 6,
-						description: 'The same level in decibels (0 leaves it as made, -6 halves it). Give gain or gainDb, not both.'
+						description: 'The same level in decibels (0 leaves it as made, -6 halves it), for this clip only: the track\'s gain still applies on top (get_mix reports the two together). Give gain or gainDb, not both.'
 					},
 					fadeInSec: { type: 'number' },
 					fadeOutSec: { type: 'number' },
