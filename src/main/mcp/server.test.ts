@@ -105,7 +105,7 @@ describe('AgentServer over Streamable HTTP', () => {
 		const client = await connect()
 		const { tools } = await client.listTools()
 		expect(tools.map((t) => t.name)).toEqual([
-			'begin_round', 'end_round', 'list_projects', 'create_project', 'open_project', 'import_media', 'wait',
+			'begin_round', 'end_round', 'list_projects', 'create_project', 'open_project', 'import_media', 'transcribe_media', 'wait',
 			'get_project', 'get_timeline', 'get_media', 'inspect_media', 'find_silences', 'search_moments', 'render_frame', 'render_frames',
 			'get_motion_guide', 'get_motion_kit',
 			'get_sound_guide', 'list_sounds', 'suggest_cues', 'render_sound', 'analyze_audio', 'inspect_audio', 'generate_audio',
@@ -188,6 +188,43 @@ describe('AgentServer over Streamable HTTP', () => {
 		expect(result.isError).toBe(true)
 		expect(result.content[0].text).toMatch(/removeClips: unknown field/)
 		expect(editor.commits).toHaveLength(0)
+	})
+
+	it('transcribes a media file again after its transcript failed, as the button does', async () => {
+		const client = await connect()
+		editor.doc.media[0].prepLanes = { words: { state: 'error', error: 'Gemini credits depleted' } } as any
+		const started: any = await client.callTool({ name: 'transcribe_media', arguments: { asset: 'greeting_team' } })
+		expect(started.isError).toBeFalsy()
+		expect(text(started)).toMatchObject({ id: 'team', started: true, before: 'error', previousError: 'Gemini credits depleted' })
+		expect(text(started).next).toMatch(/wait \{for: "media"\}/)
+		expect(editor.transcribed).toEqual(['team'])
+
+		// While it runs, a second call is refused instead of starting another paid run
+		const again: any = await client.callTool({ name: 'transcribe_media', arguments: { asset: 'team' } })
+		expect(again.isError).toBe(true)
+		expect(again.content[0].text).toMatch(/being transcribed right now/)
+		expect(editor.transcribed).toEqual(['team'])
+	})
+
+	it('asks for force before replacing a transcript that is already there', async () => {
+		const client = await connect()
+		editor.doc.media[0].prepLanes = { words: { state: 'completed' } } as any
+		const refused: any = await client.callTool({ name: 'transcribe_media', arguments: { asset: 'team' } })
+		expect(refused.isError).toBe(true)
+		expect(refused.content[0].text).toMatch(/already has a transcript.*force: true/)
+		expect(editor.transcribed).toEqual([])
+
+		const forced: any = await client.callTool({ name: 'transcribe_media', arguments: { asset: 'team', force: true } })
+		expect(forced.isError).toBeFalsy()
+		expect(editor.transcribed).toEqual(['team'])
+	})
+
+	it('refuses transcribe_media without edit permission', async () => {
+		permissions = { ...permissions, edit: false }
+		const client = await connect()
+		const refused: any = await client.callTool({ name: 'transcribe_media', arguments: { asset: 'team' } })
+		expect(refused.isError).toBe(true)
+		expect(editor.transcribed).toEqual([])
 	})
 
 	it('gates edits and export on the Agent access permissions', async () => {

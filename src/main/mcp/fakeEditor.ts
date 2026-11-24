@@ -199,6 +199,13 @@ export class FakeEditor implements EditorBridge {
 		return this.preparing.has(assetId)
 	}
 
+	/** Media ids transcribe_media asked to transcribe again. */
+	transcribed: string[] = []
+	transcribeAgain(_project: LiveProject, assetId: string) {
+		this.transcribed.push(assetId)
+		this.preparing.add(assetId)
+	}
+
 	/** Tracks "on disk", and what the tracking tools were asked for. */
 	tracks: ObjectTrack[] = []
 	trackRequests: Array<{ kind: 'faces' | 'object'; assetId: string; fromSec: number; toSec: number; atSec?: number }> = []

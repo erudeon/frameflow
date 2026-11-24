@@ -173,6 +173,11 @@ export interface EditorBridge {
 	): Promise<import('@shared/types').MulticamSpeakers>
 	/** Whether a preparation chain is running for this media file right now (a stored "running" with none is interrupted). */
 	isPreparing(project: LiveProject, assetId: string): boolean
+	/**
+	 * Transcribe a media file again, as the Media panel's "Transcribe again" does: the audio
+	 * and transcript steps, then the pieces. Starts it and returns; it runs in the background.
+	 */
+	transcribeAgain(project: LiveProject, assetId: string): void
 	/** Which of its two import lanes (transcript, picture) are running for this media file right now. Omitted by a bridge that cannot tell. */
 	preparingLanes?(project: LiveProject, assetId: string): Array<'words' | 'picture'>
 	/** Quiet stretches in a media file's sound, in source seconds. */
