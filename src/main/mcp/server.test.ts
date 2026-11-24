@@ -190,6 +190,28 @@ describe('AgentServer over Streamable HTTP', () => {
 		expect(editor.commits).toHaveLength(0)
 	})
 
+	it('refuses a dB value sent as the linear gain instead of muting the clip', async () => {
+		const client = await connect()
+		const refused: any = await client.callTool({ name: 'apply_ops', arguments: { updateItems: [{ id: 'i1', gain: -3 }] } })
+		expect(refused.isError).toBe(true)
+		expect(refused.content[0].text).toMatch(/updateItems\[0\]\.gain: must be ≥ 0 \(gain is linear.*use gainDb\)/)
+		expect(editor.commits).toHaveLength(0)
+		expect(editor.doc.timeline[0].gain).toBeUndefined()
+
+		const applied: any = await client.callTool({ name: 'apply_ops', arguments: { updateItems: [{ id: 'i1', gainDb: -3 }] } })
+		expect(applied.isError).toBeFalsy()
+		expect(editor.doc.timeline[0].gain).toBeCloseTo(0.708, 3)
+	})
+
+	it('describes gain as linear and offers gainDb in the apply_ops schema', async () => {
+		const client = await connect()
+		const { tools } = await client.listTools()
+		const update = (tools.find((t) => t.name === 'apply_ops')!.inputSchema as any).properties.updateItems.items.properties
+		expect(update.gain).toMatchObject({ minimum: 0, maximum: 2 })
+		expect(update.gain.description).toMatch(/LINEAR/)
+		expect(update.gainDb).toMatchObject({ minimum: -60, maximum: 6 })
+	})
+
 	it('gates edits and export on the Agent access permissions', async () => {
 		const client = await connect()
 		const exported: any = await client.callTool({ name: 'export', arguments: {} })
@@ -657,6 +679,20 @@ describe('AgentServer over Streamable HTTP', () => {
 			const clip = editor.doc.timeline.find((i) => i.sourceAssetId === 'gen-1')!
 			expect(clip.timelineStart).toBe(2)
 			expect(editor.doc.tracks.find((t) => t.id === clip.trackId)).toMatchObject({ kind: 'audio', role: 'voice' })
+		})
+
+		it('places at a level given in dB, and refuses a level out of range without silencing the clip', async () => {
+			const client = await connect()
+			editor.doc.media.push({
+				id: 'vo', kind: 'audio', name: 'vo', originalPath: '', preprocessing: {}, clips: [], createdAt: 0,
+				metadata: { duration: 3 } as any, generated: { provider: 'elevenlabs', capability: 'speech', prompt: 'x', costUsd: 0.01, madeAt: 0 }
+			})
+			const both = text(await client.callTool({ name: 'apply_ops', arguments: { rationale: 'Voice-over', placeAudio: [{ asset: 'vo', atSec: 0, gainDb: -6 }, { asset: 'vo', atSec: 5, gain: 1, gainDb: -6 }] } }))
+			const placed = editor.doc.timeline.filter((i) => i.sourceAssetId === 'vo').sort((a, b) => a.timelineStart - b.timelineStart)
+			expect(placed).toHaveLength(2)
+			expect(placed[0].gain).toBeCloseTo(0.501, 3)
+			expect(placed[1].gain).toBeUndefined()
+			expect(both.droppedOps.join(' ')).toMatch(/give one.*placed at its own level/)
 		})
 
 		it('placing costs nothing and needs no generate permission', async () => {

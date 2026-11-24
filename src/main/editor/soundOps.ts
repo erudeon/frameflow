@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid'
 import type { EditorDocument, EditorOps, MediaAsset, SoundBinding, TimelineDiff, TimelineItem, Track } from '@shared/types'
-import { isTrackRole } from '@shared/audio'
+import { isTrackRole, resolveGainRequest } from '@shared/audio'
 import { applySoundBindings, boundStart, freeSoundTrack } from '@shared/sound'
 import { isSoundKind, presetOf, recipeKey, soundLead, soundLength, SOUND_PRESETS, type SoundRecipe } from '@shared/synth'
 import { applyTimelineDiff, itemDuration } from '@shared/timeline'
@@ -182,10 +182,12 @@ export function applySoundOps(
 		const target = bind ? nowItem(bind.itemId)! : undefined
 		const start = target && bind ? boundStart(target, bind) : Math.max(0, place.atSec!)
 		const role = roleFor(asset.generated?.capability ?? 'sfx')
+		const level = resolveGainRequest(place)
+		if (level.problem) droppedOps.push(`${label}: ${level.problem}; placed at its own level`)
 		const item: TimelineItem = {
 			id: uuidv4(), trackId: laneFor(start, length, undefined, role), sourceAssetId: asset.id, timelineStart: start, in: 0, out: length,
 			speed: 1, preservePitch: true, duration: length, label: asset.name,
-			...(typeof place.gain === 'number' ? { gain: Math.max(0, Math.min(2, place.gain)) } : {}),
+			...(level.gain !== undefined ? { gain: level.gain } : {}),
 			...(bind ? { bind } : {})
 		}
 		;(diff.addItems ||= []).push(item)

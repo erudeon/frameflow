@@ -54,6 +54,40 @@ export const MASTER_LUFS = -14
 export const gainToDb = (gain: number): number => (gain > 0 ? 20 * Math.log10(gain) : -Infinity)
 export const dbToGain = (db: number): number => 10 ** (db / 20)
 
+/** A clip's gain is a LINEAR factor in this range: 1 leaves it as made, 0 mutes, 2 is about +6 dB. */
+export const GAIN_RANGE = { min: 0, max: 2 } as const
+/** The same range in decibels, for a writer that thinks in dB (gainDb). Below the floor, mute with gain 0. */
+export const GAIN_DB_RANGE = { min: -60, max: 6 } as const
+
+/**
+ * The gain a writer asked for, from either `gain` (linear) or `gainDb`
+ * (decibels), or why it was refused. A value out of range is refused, never
+ * clamped: a model that sends -3 meaning dB would otherwise get 0, a silent
+ * clip and a success reply. Both at once is refused too: it is never clear
+ * which one was meant.
+ */
+export function resolveGainRequest(request: { gain?: unknown; gainDb?: unknown }): { gain?: number; problem?: string } {
+	const hasGain = request.gain !== undefined && request.gain !== null
+	const hasDb = request.gainDb !== undefined && request.gainDb !== null
+	if (!hasGain && !hasDb) return {}
+	if (hasGain && hasDb) return { problem: 'gives both gain and gainDb; give one (gain is linear, gainDb is decibels)' }
+	if (hasDb) {
+		const db = request.gainDb
+		if (typeof db !== 'number' || !Number.isFinite(db)) return { problem: `gainDb ${String(db)} is not a number` }
+		if (db < GAIN_DB_RANGE.min || db > GAIN_DB_RANGE.max) {
+			return { problem: `gainDb ${db} is outside ${GAIN_DB_RANGE.min}..+${GAIN_DB_RANGE.max} dB (to mute, use gain 0)` }
+		}
+		return { gain: Math.min(GAIN_RANGE.max, dbToGain(db)) }
+	}
+	const gain = request.gain
+	if (typeof gain !== 'number' || !Number.isFinite(gain)) return { problem: `gain ${String(gain)} is not a number` }
+	if (gain < GAIN_RANGE.min || gain > GAIN_RANGE.max) {
+		const hint = gain < 0 ? `; it looks like decibels: use gainDb: ${gain}` : ''
+		return { problem: `gain ${gain} is outside ${GAIN_RANGE.min}..${GAIN_RANGE.max} (gain is linear: 1 leaves it as made, 0.5 is about -6 dB)${hint}` }
+	}
+	return { gain }
+}
+
 // ===== Analysis =====
 
 /** How many peak buckets a second of source is reduced to. */

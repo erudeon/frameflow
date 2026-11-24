@@ -631,7 +631,8 @@ const SOUND_OPS_SCHEMA = {
 				asset: { type: 'string', description: 'The audio asset id generate_audio returned (or one from get_media)' },
 				atSec: { type: 'number', minimum: 0, description: 'Timeline seconds. Not needed with follow' },
 				follow: FOLLOW_SCHEMA,
-				gain: { type: 'number', minimum: 0, maximum: 2, description: 'Level for this clip; 1 leaves it as made' }
+				gain: { type: 'number', minimum: 0, maximum: 2, description: 'LINEAR level for this clip, not dB: 1 leaves it as made, 0.5 is about -6 dB. Out of range is refused. For decibels use gainDb.' },
+				gainDb: { type: 'number', minimum: -60, maximum: 6, description: 'The same level in decibels (0 leaves it as made), for this clip only: the track\'s gain still applies on top. Give gain or gainDb, not both.' }
 			},
 			required: ['asset'],
 			additionalProperties: false
@@ -1023,7 +1024,9 @@ const applyOps: ToolDef = {
 	inputSchema: OPS_INPUT_SCHEMA,
 	alsoNeeds: (args) => (opsWriteHtml(args as EditorOps) || opsWriteKits(args as EditorOps) ? 'html' : opsMakeSound(args as EditorOps) ? 'sound' : null),
 	async run(args, ctx) {
-		const errors = validateArgs(OPS_INPUT_SCHEMA, args)
+		// A gain below 0 is almost always decibels sent as the linear factor: say so where it is refused.
+		const errors = validateArgs(OPS_INPUT_SCHEMA, args).map((e) =>
+			/\.gain: must be ≥ 0$/.test(e) ? `${e} (gain is linear, 1 leaves it as made; for decibels use gainDb)` : e)
 		if (errors.length) throw new ToolError(`Invalid operations — nothing was changed:\n- ${errors.join('\n- ')}`)
 		if (!opKeys(args).length) throw new ToolError('apply_ops needs at least one operation besides rationale.')
 
