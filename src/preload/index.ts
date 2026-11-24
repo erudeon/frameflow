@@ -284,8 +284,8 @@ const api = {
 		return () => ipcRenderer.removeListener('story-transcribe-progress', listener)
 	},
 	/** One turn (one revision): `{ placed, removed?, notes, droppedOps, revisionSeq?, error? }` */
-	placeStory: (threadId: string, story: unknown, mode: 'replace' | 'append') =>
-		ipcRenderer.invoke('story-place', { threadId, story, mode }),
+	placeStory: (threadId: string, story: unknown, mode: 'replace' | 'append', cameras: 'auto' | 'keep' = 'auto') =>
+		ipcRenderer.invoke('story-place', { threadId, story, mode, cameras }),
 	readPicksFile: (path: string) => ipcRenderer.invoke('story-read-picks', path),
 	/** Writes the object (or JSON text) and makes the folder; resolves to the path written. */
 	writePicksFile: (path: string, data: unknown) => ipcRenderer.invoke('story-write-picks', { filePath: path, data }),

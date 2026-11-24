@@ -102,3 +102,17 @@ describe('stories and picks files', () => {
 		expect(movePick(st, 2, 0).picks.map((p) => p.text)).toEqual(['Next', 'Normally', 'If'])
 	})
 })
+
+describe('camera choices in picks files', () => {
+	it('carry a pick\'s angle lock and cuts both ways', () => {
+		const assets = [{ id: 'a1', name: 'x.mp4', path: '/v/x.mp4' }]
+		const st = { id: 's', name: 'Q', picks: [{ ...pickFromWords('a1', words, 0, 6)!, angle: 2, cuts: [{ at: 3.0, angle: 'Cam 1' }] }] }
+		const file = picksFileFromStory(st, assets)
+		expect(file.picks[0]).toMatchObject({ angle: 2, cuts: [{ at: 3, angle: 'Cam 1' }] })
+		const back = storyFromPicksFile(JSON.parse(JSON.stringify(file)), assets)
+		expect(back.story.picks[0]).toMatchObject({ angle: 2, cuts: [{ at: 3, angle: 'Cam 1' }] })
+		const plain = storyFromPicksFile({ name: 'Q', picks: [{ source: '/v/x.mp4', in: 1, out: 2 }] }, assets)
+		expect(plain.story.picks[0].angle).toBeUndefined()
+		expect(plain.story.picks[0].cuts).toBeUndefined()
+	})
+})

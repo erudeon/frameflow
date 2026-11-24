@@ -112,7 +112,7 @@ describe('AgentServer over Streamable HTTP', () => {
 			'apply_ops', 'revert_to_version', 'export', 'inspect_export',
 			'find_camera_groups', 'make_multicam', 'get_multicam', 'get_angles', 'find_speakers', 'get_speakers',
 			'find_faces', 'track_object', 'list_tracks', 'get_track', 'edit_track',
-			'get_stories', 'get_words', 'set_story', 'add_picks', 'place_story', 'import_transcript', 'transcribe_local'
+			'get_stories', 'get_words', 'set_story', 'add_picks', 'edit_pick', 'place_story', 'import_transcript', 'transcribe_local'
 		])
 		const apply = tools.find((t) => t.name === 'apply_ops')!
 		expect(Object.keys(apply.inputSchema.properties || {})).toContain('removeRanges')
@@ -1119,6 +1119,45 @@ describe('AgentServer over Streamable HTTP', () => {
 			expect(editor.doc.timeline).toHaveLength(4)
 			const unknown: any = await client.callTool({ name: 'place_story', arguments: { story: 'Nope' } })
 			expect(unknown.isError).toBe(true)
+		})
+
+		it('cuts between a camera group\'s cameras at pauses, and lets an agent lock or cut one pick', async () => {
+			const client = await connect()
+			editor.doc.media.push({ id: 'side', kind: 'video', name: 'side.mov', originalPath: '/tmp/side.mov', preprocessing: {}, clips: [], createdAt: 0, metadata: { duration: 30 } as any })
+			editor.doc.multicams = [{
+				id: 'g1', name: 'Ana', soundAssetId: 'team', createdAt: 0, members: [
+					{ assetId: 'team', name: 'Cam A', offset: 0, rate: 1, sync: { method: 'reference', confidence: 'strong', driftPpm: 0 } },
+					{ assetId: 'side', name: 'Cam B', offset: 0, rate: 1, sync: { method: 'audio', confidence: 'strong', driftPpm: 0 } }
+				]
+			}]
+			await client.callTool({ name: 'set_story', arguments: { story: 'Two cams', picks: [{ quote: 'how much faster ... three times faster' }] } })
+			const read = text(await client.callTool({ name: 'get_stories', arguments: { story: 'Two cams' } }))
+			expect(read.stories[0].list[0].cameras).toEqual({ group: 'Ana', angles: [
+				{ n: 1, name: 'Cam A', files: ['greeting_team.mp4'], words: true, recorded: 'all', sync: 'reference' },
+				{ n: 2, name: 'Cam B', files: ['side.mov'], recorded: 'all', sync: 'strong' }
+			] })
+			const words = text(await client.callTool({ name: 'get_words', arguments: { asset: 'team' } }))
+			expect(words.cameras.angles.map((a: any) => a.name)).toEqual(['Cam A', 'Cam B'])
+
+			const auto = text(await client.callTool({ name: 'place_story', arguments: { story: 'Two cams', minShotSec: 1.5 } }))
+			expect(auto.cameraShots[0].shots.map((x: any) => [x.camera, x.sourceSec])).toEqual([['Cam A', expect.any(Number)], ['Cam B', 24.15]])
+			const shots = () => editor.doc.timeline.filter((i) => i.multicam?.role === 'shot').sort((a, b) => a.timelineStart - b.timelineStart).map((i) => i.sourceAssetId)
+			expect(shots()).toEqual(['team', 'side'])
+			const keep = text(await client.callTool({ name: 'place_story', arguments: { story: 'Two cams', cameras: 'keep' } }))
+			expect(keep.cameraShots[0].shots).toHaveLength(1)
+
+			const locked = text(await client.callTool({ name: 'edit_pick', arguments: { story: 'Two cams', pick: 1, angle: 'Cam B' } }))
+			expect(locked.pick).toMatchObject({ angle: 'Cam B' })
+			await client.callTool({ name: 'place_story', arguments: { story: 'Two cams' } })
+			expect(shots()).toEqual(['side'])
+
+			const outside: any = await client.callTool({ name: 'edit_pick', arguments: { story: 'Two cams', pick: 1, cuts: [{ at: 2, angle: 1 }] } })
+			expect(outside.isError).toBe(true)
+			expect(outside.content[0].text).toMatch(/outside pick 1/)
+			await client.callTool({ name: 'edit_pick', arguments: { story: 'Two cams', pick: 1, angle: null, cuts: [{ at: 22, angle: 2 }] } })
+			const cut = text(await client.callTool({ name: 'place_story', arguments: { story: 'Two cams' } }))
+			expect(cut.cameraShots[0].shots.map((x: any) => x.camera)).toEqual(['Cam A', 'Cam B'])
+			expect(editor.doc.stories![0].picks[0].angle).toBeUndefined()
 		})
 
 		it('imports a transcript file and transcribes on this Mac through the editor', async () => {

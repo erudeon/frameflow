@@ -7,10 +7,10 @@ import { randomUUID } from 'node:crypto'
 import type { Story } from '@shared/story'
 import type { PromptTurn } from '@shared/types'
 import type { ApplyOutcome, EditorBridge, LiveProject } from '../mcp/bridge'
-import { buildStoryPlacement, type PlaceMode, type WordSource } from './place'
+import { buildStoryPlacement, type CameraMode, type PlaceMode, type StoryPlacement, type WordSource } from './place'
 
 export type StoryCommit =
-	| { ok: true; placed: number; removed: number; droppedOps: string[]; notes: string[]; fromSec: number; toSec: number; outcome: Extract<ApplyOutcome, { ok: true }> }
+	| { ok: true; placed: number; removed: number; droppedOps: string[]; notes: string[]; fromSec: number; toSec: number; cameraShots: StoryPlacement['cameraShots']; outcome: Extract<ApplyOutcome, { ok: true }> }
 	| { ok: false; error: string; droppedOps?: string[] }
 
 export async function commitStory(
@@ -18,7 +18,8 @@ export async function commitStory(
 	project: LiveProject,
 	story: Story,
 	mode: PlaceMode,
-	agent: NonNullable<PromptTurn['agent']>
+	agent: NonNullable<PromptTurn['agent']>,
+	cameras: { mode?: CameraMode; minShotSec?: number } = {}
 ): Promise<StoryCommit> {
 	if (!story.picks.length) return { ok: false, error: `"${story.name}" has no picks to place.` }
 	const assetIds = [...new Set(story.picks.map((p) => p.assetId))].filter((id) => project.doc.media.some((a) => a.id === id))
@@ -29,7 +30,8 @@ export async function commitStory(
 	const tags = project.doc.clipTags
 	const turnId = randomUUID()
 	const placement = buildStoryPlacement(project.doc, story, mode, sources, {
-		by: agent.name, turnId, speakerOf: (p) => p.speaker ?? tags?.[p.assetId]?.speaker
+		by: agent.name, turnId, speakerOf: (p) => p.speaker ?? tags?.[p.assetId]?.speaker,
+		cameras: cameras.mode, minShotSec: cameras.minShotSec
 	})
 	if (!placement.placed) {
 		return { ok: false, error: `Nothing from "${story.name}" could be placed.`, droppedOps: placement.droppedOps }
@@ -52,6 +54,6 @@ export async function commitStory(
 		ok: true, placed: placement.placed, removed: placement.removed, outcome,
 		droppedOps: [...placement.droppedOps, ...outcome.pruned],
 		notes: [...placement.notes, ...(outcome.shifted ?? [])],
-		fromSec: placement.fromSec, toSec: placement.toSec
+		fromSec: placement.fromSec, toSec: placement.toSec, cameraShots: placement.cameraShots
 	}
 }

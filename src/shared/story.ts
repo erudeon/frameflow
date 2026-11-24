@@ -26,7 +26,17 @@ export interface StoryPick {
 	take?: string
 	text: string
 	note?: string
+	/**
+	 * Camera groups only. `angle` locks the whole pick to one camera (its 1-based number or name); `cuts` cut to other
+	 * cameras inside the pick, each from `at` (SOURCE seconds of this pick's clip, snapped to the word starting there).
+	 * Cuts win over the lock, the lock over place_story's camera mode.
+	 */
+	angle?: string | number
+	cuts?: PickCut[]
 }
+
+/** From `at` (SOURCE seconds of the pick's clip) the pick shows `angle` (a camera's 1-based number or name). */
+export interface PickCut { at: number; angle: string | number }
 
 export interface Story {
 	id: string
@@ -188,6 +198,49 @@ export function placeRange(pick: StoryPick, words: Word[], sourceDuration?: numb
 
 const round3 = (x: number) => Math.round(x * 1000) / 1000
 
+// ---------------------------------------------------------------- cutting between cameras
+
+/**
+ * How "cut between cameras at pauses" chooses its cuts: a cut lands just before a word that follows a pause, never
+ * leaving a shot shorter than minShotSec (or a last shot shorter than lastShotSec).
+ */
+export const CAMERA_CUTS = { minShotSec: 3, lastShotSec: 2.5, pauseSec: 0.25, lead: 0.06, noSilencePauseSec: 0.35 }
+
+/**
+ * Every place inside [range.in, range.out] a pick could cut to another camera: just before a word that follows a
+ * pause, in SOURCE seconds, in order. A pause is measured quiet (silences) ending at the word's start; without
+ * measurements, a gap between the words of at least 0.35 s (word ends are less sure than starts).
+ */
+export function pauseCutPoints(words: Word[], range: { in: number; out: number }, silences?: { start: number; end: number }[] | null): number[] {
+	const out: number[] = []
+	for (let i = 1; i < words.length; i++) {
+		const w = words[i], prev = words[i - 1]
+		if (w.start <= range.in + 0.05 || w.start >= range.out) continue
+		let cut: number | null = null
+		if (silences?.length) {
+			const q = silences.find((s) => s.end >= w.start - 0.25 && s.end <= w.start + 0.02 && s.start >= prev.start && s.end - s.start >= CAMERA_CUTS.pauseSec)
+			if (q) cut = Math.max(q.start, w.start - CAMERA_CUTS.lead)
+		} else if (w.start - prev.end >= CAMERA_CUTS.noSilencePauseSec) {
+			cut = Math.max(prev.end, w.start - CAMERA_CUTS.lead)
+		}
+		if (cut != null && cut > range.in) out.push(round3(cut))
+	}
+	return out
+}
+
+/** The pause cuts to make: the earliest that leave every shot at least minShotSec and the last one lastShotSec. */
+export function chooseCameraCuts(points: number[], range: { in: number; out: number },
+	opts: { minShotSec?: number; lastShotSec?: number } = {}): number[] {
+	const min = opts.minShotSec ?? CAMERA_CUTS.minShotSec
+	const last = opts.lastShotSec ?? Math.min(min, CAMERA_CUTS.lastShotSec)
+	const chosen: number[] = []
+	let from = range.in
+	for (const p of [...points].sort((a, b) => a - b)) {
+		if (p - from >= min - 1e-6 && range.out - p >= last - 1e-6) { chosen.push(p); from = p }
+	}
+	return chosen
+}
+
 // ---------------------------------------------------------------- stories
 
 export function storyDuration(story: Story): number {
@@ -233,6 +286,8 @@ export function storyFromPicksFile(file: PicksFile, assets: AssetRef[]): { story
 		if (!a) { unmatched.push(String(p.source)); continue }
 		picks.push({ id: newPickId(), assetId: a.id, in: Number(p.in), out: Number(p.out), speaker: p.speaker, take: p.take,
 			text: String(p.text ?? ''), note: p.note,
+			...(typeof p.angle === 'string' || typeof p.angle === 'number' ? { angle: p.angle } : {}),
+			...(Array.isArray(p.cuts) ? { cuts: (p.cuts as any[]).filter((c) => c && Number.isFinite(Number(c.at)) && c.angle != null).map((c) => ({ at: Number(c.at), angle: c.angle })) } : {}),
 			wordIn: typeof p.wordIn === 'number' ? (p.wordIn as number) : undefined,
 			wordOut: typeof p.wordOut === 'number' ? (p.wordOut as number) : undefined })
 	}
@@ -243,5 +298,6 @@ export function picksFileFromStory(story: Story, assets: AssetRef[], fps = 25): 
 	const byId = new Map(assets.map((a) => [a.id, a]))
 	return { version: 1, name: story.name, fps, picks: story.picks.map((p) => ({
 		source: byId.get(p.assetId)?.path ?? byId.get(p.assetId)?.name ?? p.assetId, in: p.in, out: p.out,
-		speaker: p.speaker, take: p.take, text: p.text, note: p.note, id: p.id, wordIn: p.wordIn, wordOut: p.wordOut })) }
+		speaker: p.speaker, take: p.take, text: p.text, note: p.note, id: p.id, wordIn: p.wordIn, wordOut: p.wordOut,
+		...(p.angle != null ? { angle: p.angle } : {}), ...(p.cuts?.length ? { cuts: p.cuts } : {}) })) }
 }

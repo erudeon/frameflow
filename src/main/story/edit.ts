@@ -16,6 +16,10 @@ export interface PickRequest {
 	speaker?: string
 	take?: string
 	note?: string
+	/** Camera groups: lock the pick to one camera (1-based number or name). */
+	angle?: string | number
+	/** Camera groups: cut to a camera from `at` (SOURCE seconds of the pick's clip). */
+	cuts?: Array<{ at: number; angle: string | number }>
 }
 
 export const HISTORY_KEEP = 10
@@ -78,7 +82,9 @@ export async function resolvePicks(requests: PickRequest[], ctx: ResolveContext)
 			const meta = (assetId: string) => ({
 				speaker: req.speaker ?? ctx.tags?.[assetId]?.speaker,
 				take: req.take ?? ctx.tags?.[assetId]?.take,
-				...(req.note ? { note: req.note } : {})
+				...(req.note ? { note: req.note } : {}),
+				...(req.angle != null && req.angle !== '' ? { angle: req.angle } : {}),
+				...(req.cuts?.length ? { cuts: req.cuts.map((c) => ({ at: Number(c.at), angle: c.angle })) } : {})
 			})
 			if (req.quote && req.quote.trim()) {
 				const candidates = req.asset ? [ctx.resolveAsset(req.asset)] : ctx.media.filter((a) => a.kind !== 'image')

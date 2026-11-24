@@ -31,7 +31,7 @@ export function registerStoryIpc(): void {
 	ipcMain.handle('story-abort-transcribe', (_event, { threadId, assetId }: { threadId: string; assetId: string }) =>
 		abortLocalTranscribe(String(threadId), String(assetId)))
 
-	ipcMain.handle('story-place', async (_event, { threadId, story, mode }: { threadId: string; story: Story; mode?: 'replace' | 'append' }) => {
+	ipcMain.handle('story-place', async (_event, { threadId, story, mode, cameras }: { threadId: string; story: Story; mode?: 'replace' | 'append'; cameras?: 'auto' | 'keep' }) => {
 		try {
 			if (!story || !Array.isArray(story.picks)) return { placed: 0, notes: [], droppedOps: [], error: 'No story to place.' }
 			return await writeQueue.run(LIVE_PROJECT, async () => {
@@ -39,11 +39,13 @@ export function registerStoryIpc(): void {
 				if (!project || project.threadId !== threadId) {
 					return { placed: 0, notes: [], droppedOps: [], error: 'That project is not the one open in the editor.' }
 				}
-				const result = await commitStory(rendererBridge, project, story, mode === 'append' ? 'append' : 'replace', { name: 'Story', sessionId: 'story-view' })
+				const result = await commitStory(rendererBridge, project, story, mode === 'append' ? 'append' : 'replace', { name: 'Story', sessionId: 'story-view' },
+					{ mode: cameras === 'keep' ? 'keep' : 'auto' })
 				if (!result.ok) return { placed: 0, notes: [], droppedOps: result.droppedOps ?? [], error: result.error }
 				return {
 					placed: result.placed, removed: result.removed, notes: result.notes, droppedOps: result.droppedOps,
-					revisionId: result.outcome.revisionId, revisionSeq: result.outcome.revisionSeq, fromSec: result.fromSec, toSec: result.toSec
+					revisionId: result.outcome.revisionId, revisionSeq: result.outcome.revisionSeq, fromSec: result.fromSec, toSec: result.toSec,
+					cameraShots: result.cameraShots
 				}
 			})
 		} catch (error) {

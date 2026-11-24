@@ -181,3 +181,91 @@ describe('cutting a pick at the sound', () => {
 		expect(out.diff.addItems![0]).toMatchObject({ in: refined.in, out: refined.out })
 	})
 })
+
+describe('cutting between cameras', () => {
+	// One answer filmed by two cameras: a (Cam 2, the one with the words and the main sound) and c (Cam 1, 30° side).
+	const W = words([[10, 10.3, 'So'], [10.35, 10.7, 'the'], [10.75, 11.2, 'answer'], [11.25, 11.5, 'is'], [11.55, 12.1, 'yes.'],
+		[13, 13.3, 'And'], [13.35, 13.8, 'also'], [13.85, 14.6, 'because'], [16, 16.4, 'it'], [16.45, 17, 'works.'], [19, 19.5, 'Done.']])
+	const SIL = [{ start: 8, end: 9.95 }, { start: 12.2, end: 12.95 }, { start: 14.7, end: 15.95 }, { start: 17.1, end: 18.9 }]
+	type Sync = MulticamGroup['members'][number]['sync']
+	const strong: Sync = { method: 'audio', confidence: 'strong', driftPpm: 0 }
+	function twoCams(side: Partial<MulticamGroup['members'][number]> = {}, sideDuration = 60): EditorDocument {
+		const doc = makeDoc()
+		doc.media.push({ ...asset('c', sideDuration) })
+		doc.multicams = [{
+			id: 'g1', name: 'Julian', soundAssetId: 'a', createdAt: 0,
+			members: [
+				{ assetId: 'a', name: 'Cam 2', offset: 0, rate: 1, sync: { method: 'reference', confidence: 'strong', driftPpm: 0 } },
+				{ assetId: 'c', name: 'Cam 1', offset: 1.5, rate: 1, sync: strong, ...side }
+			]
+		}]
+		return doc
+	}
+	const src = { a: { words: W, silences: SIL } }
+	const pick = () => pickFromWords('a', W, 0, 10)!
+	const shotsOf = (out: ReturnType<typeof buildStoryPlacement>) =>
+		out.diff.addItems!.filter((i) => i.trackId === 'v1').sort((x, y) => x.timelineStart - y.timelineStart)
+
+	it('finds pause cuts just before a word after measured quiet, and keeps every shot long enough', async () => {
+		const { pauseCutPoints, chooseCameraCuts } = await import('@shared/story')
+		const pts = pauseCutPoints(W, { in: 9.95, out: 19.6 }, SIL)
+		expect(pts).toEqual([12.94, 15.94, 18.94])
+		expect(chooseCameraCuts(pts, { in: 9.9, out: 19.6 })).toEqual([12.94, 15.94])
+		// Without measured quiet only a clear gap between words counts (0.35 s).
+		expect(pauseCutPoints(W, { in: 9.95, out: 19.6 }, null)).toEqual([12.94, 15.94, 18.94])
+	})
+
+	it('auto: cuts to the other camera at a pause and back, the sound untouched, the shots back to back', () => {
+		const out = buildStoryPlacement(twoCams(), story([pick()]), 'replace', src)
+		const shots = shotsOf(out)
+		expect(shots.map((s) => s.sourceAssetId)).toEqual(['a', 'c', 'a'])
+		for (let k = 1; k < shots.length; k++) expect(shots[k].timelineStart).toBeCloseTo(shots[k - 1].timelineStart + shots[k - 1].duration, 6)
+		const r = placeRange(pick(), W, 60, SIL)
+		// The side camera shows the same instant: its source time is the group time less its offset.
+		const cut = shots[1].timelineStart
+		expect(shots[1].in).toBeCloseTo(r.in + cut - 1.5, 3)
+		expect(cut).toBeCloseTo(12.94 - r.in, 3)
+		const sounds = out.diff.addItems!.filter((i) => i.multicam?.role === 'sound')
+		expect(sounds).toHaveLength(1)
+		expect(sounds[0]).toMatchObject({ sourceAssetId: 'a' })
+		expect(out.cameraShots).toEqual([{ pick: 1, group: 'Julian', shots: [
+			{ atSec: 0, sourceSec: r.in, angle: 2, camera: 'Cam 2' },
+			{ atSec: expect.closeTo(cut, 3), sourceSec: 12.94, angle: 1, camera: 'Cam 1' },
+			{ atSec: expect.closeTo(15.94 - r.in, 3), sourceSec: 15.94, angle: 2, camera: 'Cam 2' }
+		] }])
+		expect(shots.every((s) => s.label?.startsWith('"So the answer'))).toBe(true)
+	})
+
+	it('keep: every pick on the camera that recorded its words', () => {
+		const out = buildStoryPlacement(twoCams(), story([pick()]), 'replace', src, { by: 'Story', cameras: 'keep' })
+		expect(shotsOf(out).map((s) => s.sourceAssetId)).toEqual(['a'])
+	})
+
+	it('does not cut on its own to a camera synced weakly, and says why', () => {
+		const out = buildStoryPlacement(twoCams({ sync: { method: 'audio', confidence: 'weak', driftPpm: 0 } }), story([pick()]), 'replace', src)
+		expect(shotsOf(out).map((s) => s.sourceAssetId)).toEqual(['a'])
+		expect(out.notes.join('\n')).toMatch(/Cam 1 is synced weakly/)
+	})
+
+	it('does not cut to a camera that was not recording all of the stretch', () => {
+		// c records group 1.5–15.5: it misses the end of 12.94–15.95.
+		const out = buildStoryPlacement(twoCams({}, 14), story([pick()]), 'replace', src)
+		expect(shotsOf(out).map((s) => s.sourceAssetId)).toEqual(['a'])
+		expect(out.notes.join('\n')).toMatch(/Cam 1 was not recording all of 0:12\.9–0:15\.9/)
+	})
+
+	it('a locked angle shows that camera for the whole pick, a weak sync allowed (a person chose it)', () => {
+		const out = buildStoryPlacement(twoCams({ sync: { method: 'audio', confidence: 'weak', driftPpm: 0 } }), story([{ ...pick(), angle: 'Cam 1' }]), 'replace', src)
+		expect(shotsOf(out).map((s) => s.sourceAssetId)).toEqual(['c'])
+	})
+
+	it('explicit cuts win, each snapped to just before the word starting there', () => {
+		const p = { ...pick(), cuts: [{ at: 13.9, angle: 1 }, { at: 16.1, angle: 2 }, { at: 40, angle: 1 }] }
+		const out = buildStoryPlacement(twoCams(), story([p]), 'replace', src)
+		const r = placeRange(pick(), W, 60, SIL)
+		expect(out.cameraShots[0].shots.map((s) => [s.sourceSec, s.angle])).toEqual([[r.in, 2], [13.79, 1], [15.94, 2]])
+		expect(out.notes.join('\n')).toMatch(/cut at 0:40\.0: outside the pick/)
+		const bad = buildStoryPlacement(twoCams(), story([{ ...pick(), cuts: [{ at: 13.9, angle: 'Cam 9' }] }]), 'replace', src)
+		expect(bad.notes.join('\n')).toMatch(/no camera "Cam 9" \(cameras: 1 Cam 1, 2 Cam 2\)/)
+	})
+})

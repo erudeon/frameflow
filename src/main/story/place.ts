@@ -7,9 +7,10 @@
  */
 import { v4 as uuidv4 } from 'uuid'
 import type { EditorDocument, EditorOps, TimelineDiff, TimelineItem, Track } from '@shared/types'
-import { pickWordRange, placeRange, type Story, type StoryPick, type Word } from '@shared/story'
+import { chooseCameraCuts, CAMERA_CUTS, pauseCutPoints, pickWordRange, placeRange, type Story, type StoryPick, type Word } from '@shared/story'
 import { computeContentEnd, itemEnd, TIMELINE_DIFF_SCHEMA_VERSION } from '@shared/timeline'
-import { cameraOf, memberOf, placeGroup, soundSpan, toGroupTime } from '@shared/multicam'
+import { anglesOf, cameraOf, cameraSpans, memberOf, placeGroup, planAngleSwitches, resolveAngle, soundSpan, toGroupTime, toSourceTime, type Camera } from '@shared/multicam'
+import type { MulticamGroup, MulticamMember } from '@shared/types'
 import { nextTrackName, nextTrackOrder } from '@shared/tracks'
 import { opsToDiff } from '../editor/ops'
 
@@ -123,6 +124,107 @@ export function refineRange(pick: StoryPick, words: Word[], range: { in: number;
 
 export type PlaceMode = 'replace' | 'append'
 
+// ---------------------------------------------------------------- cutting between cameras
+
+/** "auto": cut between the group's cameras at pauses. "keep": every pick on the camera its words come from. */
+export type CameraMode = 'auto' | 'keep'
+
+/** One cut inside a pick: from `at` (SOURCE seconds of the pick's clip) it shows angle `angle` (1-based). */
+export interface CameraSwitch { at: number; angle: number }
+
+type Media = Parameters<typeof anglesOf>[1]
+
+/** A member's sync is good enough to cut to without a person looking: strong, the reference, or set by hand. */
+const trusted = (m: MulticamMember) => m.sync.confidence === 'strong' || m.sync.method === 'reference' || m.sync.method === 'manual'
+
+const clockOf = (s: number) => `${Math.floor(s / 60)}:${(s % 60).toFixed(1).padStart(4, '0')}`
+
+/**
+ * Whether `camera` recorded all of the group stretch [ga, gb], file joins allowed, and how well its files there are
+ * synced. Null when it recorded all of it with trusted sync; else why not.
+ */
+export function cameraGap(camera: Camera, media: Media, ga: number, gb: number): { reason: 'missing' | 'weak'; files: string[] } | null {
+	const spans = cameraSpans(camera, media).filter((sp) => sp.end > ga + 1e-6 && sp.start < gb - 1e-6)
+	let t = ga
+	for (const sp of spans) {
+		if (sp.start > t + 0.04) break
+		t = Math.max(t, sp.end)
+	}
+	if (t < gb - 0.04) return { reason: 'missing', files: [] }
+	const weak = spans.filter((sp) => !trusted(sp.member))
+	return weak.length ? { reason: 'weak', files: weak.map((sp) => sp.member.name) } : null
+}
+
+/**
+ * The camera cuts inside one pick from a camera group, in SOURCE seconds of the pick's clip, given where it is cut
+ * (`range`). Precedence: the pick's own `cuts`, then its `angle` lock, then the mode. "auto" cuts at pauses
+ * (chooseCameraCuts), switching to another camera only for a stretch it recorded all of with a trusted sync, and back
+ * to the pick's own camera (the one that recorded its words) after; with three or more cameras the others take turns.
+ */
+export function cameraSwitchesFor(
+	pick: StoryPick, group: MulticamGroup, media: Media, member: MulticamMember, range: { in: number; out: number },
+	source: Pick<WordSource, 'words' | 'silences'> | undefined, mode: CameraMode, opts: { minShotSec?: number } = {}
+): { switches: CameraSwitch[]; notes: string[] } {
+	const angles = anglesOf(group, media)
+	const number = (cam?: Camera) => (cam ? angles.findIndex((c) => c.key === cam.key) + 1 : 0)
+	const own = cameraOf(group, media, member.assetId)
+	const notes: string[] = []
+	const angleNo = (ref: string | number, what: string): number | null => {
+		const cam = resolveAngle(group, media, ref)
+		if (!cam) { notes.push(`${what}: there is no camera "${ref}" (cameras: ${angles.map((c, i) => `${i + 1} ${c.name}`).join(', ')})`); return null }
+		return number(cam)
+	}
+	const words = source?.words ?? []
+	/** A cut asked for at `at`: just before the word starting nearest it (within 0.4 s), else where it was asked. */
+	const snap = (at: number) => {
+		let best: Word | undefined
+		for (const w of words) if (Math.abs(w.start - at) <= 0.4 && (!best || Math.abs(w.start - at) < Math.abs(best.start - at))) best = w
+		return best ? Math.max(range.in, best.start - CAMERA_CUTS.lead) : at
+	}
+
+	if (pick.cuts?.length) {
+		const switches: CameraSwitch[] = []
+		if (pick.angle != null) { const n = angleNo(pick.angle, 'angle'); if (n) switches.push({ at: range.in, angle: n }) }
+		for (const c of [...pick.cuts].sort((a, b) => a.at - b.at)) {
+			const at = snap(c.at)
+			if (at <= range.in + 0.05 || at >= range.out - 0.05) { notes.push(`cut at ${clockOf(c.at)}: outside the pick (${clockOf(range.in)}–${clockOf(range.out)})`); continue }
+			const n = angleNo(c.angle, `cut at ${clockOf(c.at)}`)
+			if (n) switches.push({ at: Math.round(at * 1000) / 1000, angle: n })
+		}
+		return { switches, notes }
+	}
+	if (pick.angle != null) {
+		const n = angleNo(pick.angle, 'angle')
+		return { switches: n && n !== number(own) ? [{ at: range.in, angle: n }] : [], notes }
+	}
+	if (mode === 'keep' || angles.length < 2 || !own) return { switches: [], notes }
+
+	const others = angles.filter((c) => c.key !== own.key)
+	const bounds = [range.in, ...chooseCameraCuts(pauseCutPoints(words, range, source?.silences), range, opts), range.out]
+	const g = (t: number) => toGroupTime(member, t)
+	const switches: CameraSwitch[] = []
+	const skipped = new Map<string, string>()
+	let current: Camera = own
+	const isOwn = (c: Camera) => c.key === own.key
+	let turn = 0
+	for (let k = 1; k < bounds.length - 1; k++) {
+		const [a, b] = [bounds[k], bounds[k + 1]]
+		if (!isOwn(current)) { switches.push({ at: a, angle: number(own) }); current = own; continue }
+		// The next camera in turn that recorded all of this stretch with a trusted sync.
+		let chosen: Camera | undefined
+		for (let i = 0; i < others.length && !chosen; i++) {
+			const cam = others[(turn + i) % others.length]
+			const gap = cameraGap(cam, media, g(a), g(b))
+			if (!gap) { chosen = cam; turn = (turn + i + 1) % others.length }
+			else if (gap.reason === 'weak') skipped.set(cam.name, `${cam.name} is synced weakly here (${gap.files.join(', ')}), so the cut is not made automatically: check it with get_angles, fix it with nudgeAngle, or set the pick's angle or cuts`)
+			else if (!skipped.has(cam.name)) skipped.set(cam.name, `${cam.name} was not recording all of ${clockOf(a)}–${clockOf(b)}`)
+		}
+		if (chosen) { switches.push({ at: a, angle: number(chosen) }); current = chosen }
+	}
+	notes.push(...skipped.values())
+	return { switches, notes }
+}
+
 export interface StoryPlacement {
 	diff: TimelineDiff
 	/** Picks that became clips. */
@@ -134,6 +236,8 @@ export interface StoryPlacement {
 	/** Timeline seconds the story covers once placed. */
 	fromSec: number
 	toSec: number
+	/** Every pick from a camera group: its shots in order, each with the camera it shows. */
+	cameraShots: Array<{ pick: number; group: string; shots: Array<{ atSec: number; sourceSec: number; angle: number; camera: string }>; notes?: string[] }>
 }
 
 /** The track opsToDiff adds to: the lowest unlocked, visible video track. Kept identical so removes and adds agree. */
@@ -165,14 +269,19 @@ export function buildStoryPlacement(
 	story: Pick<Story, 'name' | 'picks'>,
 	mode: PlaceMode,
 	sources: Record<string, WordSource | undefined>,
-	opts: { by: string; turnId?: string; speakerOf?: (pick: StoryPick) => string | undefined; newId?: () => string } = { by: 'Story' }
+	opts: {
+		by: string; turnId?: string; speakerOf?: (pick: StoryPick) => string | undefined; newId?: () => string
+		/** How picks from camera groups use the cameras (default "auto"). */
+		cameras?: CameraMode
+		minShotSec?: number
+	} = { by: 'Story' }
 ): StoryPlacement {
 	const newId = opts.newId ?? uuidv4
 	const notes: string[] = []
 	const dropped: string[] = []
 	const track = mainVideoTrack(doc)
 	if (!track) {
-		return { diff: { schemaVersion: TIMELINE_DIFF_SCHEMA_VERSION }, placed: 0, removed: 0, droppedOps: ['There is no unlocked, visible video track to put the story on.'], notes, fromSec: 0, toSec: 0 }
+		return { diff: { schemaVersion: TIMELINE_DIFF_SCHEMA_VERSION }, placed: 0, removed: 0, droppedOps: ['There is no unlocked, visible video track to put the story on.'], notes, fromSec: 0, toSec: 0, cameraShots: [] }
 	}
 
 	const removing = mode === 'replace' ? itemsToReplace(doc, track) : []
@@ -190,6 +299,7 @@ export function buildStoryPlacement(
 	let estimatedClips = 0
 	let rawEdges = 0
 	let groupPicks = 0
+	const cameraShots: StoryPlacement['cameraShots'] = []
 
 	// A free audio lane for a group's sound over [from, to): the first unlocked audio track nothing else uses there.
 	const audioLaneFor = (from: number, to: number): Track => {
@@ -244,12 +354,36 @@ export function buildStoryPlacement(
 				const placed = placeGroup(group, doc.media, {
 					videoTrackId: track.id, audioTrackId: audio.id, atSec: cursor, newId, angle: angle ?? undefined, from, to
 				})
-				if (!('reason' in placed) && placed.items.length) {
-					const shots = placed.items.filter((i) => i.trackId === track.id).map((i) => ({ ...i, label }))
-					const sounds = placed.items.filter((i) => i.trackId !== track.id)
+				if (!('reason' in placed) && placed.items.some((i) => i.trackId === track.id)) {
+					let items = placed.items
+					const at = cursor
+					const tl = (src: number) => at + (toGroupTime(member, src) - from) / sound.rate
+					const cams = cameraSwitchesFor(pick, group, doc.media, member, range, source, opts.cameras ?? 'auto', { minShotSec: opts.minShotSec })
+					const pickNotes = cams.notes.map((n) => `${what}: ${n}`)
+					if (cams.switches.length) {
+						const plan = planAngleSwitches(items, group, cams.switches.map((sw) => ({ atSec: tl(sw.at), angle: sw.angle })), doc.media, newId, at + length)
+						const updates = new Map(plan.updates.map((u) => [u.id, u]))
+						const removed = new Set(plan.removeIds)
+						items = [...items.filter((i) => !removed.has(i.id)).map((i) => (updates.has(i.id) ? { ...i, ...updates.get(i.id) } : i)), ...plan.adds]
+						pickNotes.push(...plan.dropped.map((d) => `${what}: ${d}`), ...plan.notes.map((n) => `${what}: ${n}`))
+					}
+					const angles = anglesOf(group, doc.media)
+					const shots = items.filter((i) => i.trackId === track.id).map((i) => ({ ...i, label })).sort((x, y) => x.timelineStart - y.timelineStart)
+					const sounds = items.filter((i) => i.trackId !== track.id)
 					groupItems.push(...shots, ...sounds)
 					groupPicks++
-					cursor = Math.max(cursor + length, ...placed.items.map(itemEnd))
+					// Shots in order with their camera; a camera's file join is not a cut, so a run on one camera is one shot.
+					const runs: StoryPlacement['cameraShots'][number]['shots'] = []
+					for (const shot of shots) {
+						const cam = cameraOf(group, doc.media, shot.sourceAssetId)
+						const n = cam ? angles.findIndex((c) => c.key === cam.key) + 1 : 0
+						if (runs.at(-1)?.angle === n) continue
+						const src = toSourceTime(member, from + (shot.timelineStart - at) * sound.rate)
+						runs.push({ atSec: round3(shot.timelineStart), sourceSec: round3(src), angle: n, camera: cam?.name ?? '?' })
+					}
+					cameraShots.push({ pick: n + 1, group: group.name, shots: runs, ...(pickNotes.length ? { notes: pickNotes } : {}) })
+					notes.push(...pickNotes)
+					cursor = Math.max(cursor + length, ...items.map(itemEnd))
 					return
 				}
 				notes.push(`${what}: placed as a plain clip, not as camera group "${group.name}" (${'reason' in placed ? placed.reason : 'nothing to place'}).`)
@@ -280,7 +414,8 @@ export function buildStoryPlacement(
 		droppedOps: [...dropped, ...mapped.droppedOps],
 		notes: [...notes, ...mapped.notes],
 		fromSec: round3(start),
-		toSec: round3(cursor)
+		toSec: round3(cursor),
+		cameraShots
 	}
 }
 

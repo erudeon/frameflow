@@ -46,6 +46,8 @@ import {
 import { storyDuration, wordsToLines, type Story, type Word } from '@shared/story'
 import { findStory, resolvePicks, writeStory, type PickRequest } from '../story/edit'
 import { commitStory } from '../story/commit'
+import { cameraGap } from '../story/place'
+import { anglesOf as storyAngles, cameraSpans as storyCameraSpans, memberOf as storyMemberOf, toGroupTime as storyGroupTime } from '@shared/multicam'
 
 /**
  * Where one media file's preparation stands, for agents: the overall state as
@@ -2727,20 +2729,60 @@ const PICK_SCHEMA = {
 		quote: { type: 'string' },
 		speaker: { type: 'string' },
 		take: { type: 'string' },
-		note: { type: 'string' }
+		note: { type: 'string' },
+		angle: {
+			oneOf: [{ type: 'integer', minimum: 1 }, { type: 'string' }],
+			description: 'Camera groups only: show this camera for the whole pick (its 1-based number or name, as get_words or get_stories list them)'
+		},
+		cuts: {
+			type: 'array',
+			description: 'Camera groups only: cut to a camera inside the pick. Each cut shows `angle` from `at` (SOURCE seconds of this ' +
+				'pick\'s clip, snapped to just before the word starting there) until the next cut. Cuts win over angle, angle over place_story\'s cameras.',
+			items: {
+				type: 'object',
+				properties: { at: { type: 'number', minimum: 0 }, angle: { oneOf: [{ type: 'integer', minimum: 1 }, { type: 'string' }] } },
+				required: ['at', 'angle'],
+				additionalProperties: false
+			}
+		}
 	},
 	additionalProperties: false
 }
 
+/**
+ * The cameras of the group a clip belongs to, for an agent: each angle's number, name and files, and when given a
+ * SOURCE stretch of the clip, whether that camera recorded all of it and how sure its sync is there.
+ */
+function cameraInfo(groups: MulticamGroup[] | undefined, media: MediaAsset[], assetId: string, span?: { in: number; out: number }) {
+	const group = groups?.find((g) => g.members.some((m) => m.assetId === assetId))
+	if (!group) return undefined
+	const member = storyMemberOf(group, assetId)!
+	const angles = storyAngles(group, media)
+	return {
+		group: group.name,
+		angles: angles.map((cam, i) => {
+			const own = cam.members.some((m) => m.assetId === assetId)
+			const gap = span ? cameraGap(cam, media, storyGroupTime(member, span.in), storyGroupTime(member, span.out)) : undefined
+			return {
+				n: i + 1, name: cam.name, files: cam.members.map((m) => media.find((a) => a.id === m.assetId)?.name ?? m.name),
+				...(own ? { words: true } : {}),
+				...(span ? { recorded: !gap || gap.reason === 'weak' ? 'all' : 'part or none', sync: own ? 'reference' : gap?.reason === 'weak' ? 'weak' : 'strong' } : {})
+			}
+		})
+	}
+}
+
 /** A story as an agent reads it: every pick with its clip, its words and its length. */
-function storyRow(story: Story, media: MediaAsset[]) {
+function storyRow(story: Story, media: MediaAsset[], groups?: MulticamGroup[]) {
 	const name = (id: string) => media.find((a) => a.id === id)?.name ?? `(missing clip ${id})`
 	return {
 		id: story.id, name: story.name, rev: story.rev ?? 0, picks: story.picks.length, durationSec: r3(storyDuration(story)),
 		history: story.history?.length || undefined,
 		list: story.picks.map((p, i) => ({
 			n: i + 1, id: p.id, asset: name(p.assetId), assetId: p.assetId, in: r3(p.in), out: r3(p.out), sec: r3(p.out - p.in),
-			speaker: p.speaker, take: p.take, text: p.text, note: p.note
+			speaker: p.speaker, take: p.take, text: p.text, note: p.note,
+			...(p.angle != null ? { angle: p.angle } : {}), ...(p.cuts?.length ? { cuts: p.cuts } : {}),
+			cameras: cameraInfo(groups, media, p.assetId, { in: p.in, out: p.out })
 		}))
 	}
 }
@@ -2751,7 +2793,8 @@ const getStories: ToolDef = {
 	description:
 		'The project\'s stories: ordered lists of spoken picks across takes, one story per short form, that the person ' +
 		'builds in the Story view and you can build too. Each pick is a run of words from one clip (SOURCE seconds, the words, ' +
-		'speaker and take); clipTags says who is on each clip and which take it is. Read it before set_story or add_picks, and ' +
+		'speaker and take); clipTags says who is on each clip and which take it is. A pick from a camera group lists its cameras: ' +
+		'which recorded all of the pick and how sure each sync is, and its angle lock or cuts if it has them. Read it before set_story or add_picks, and ' +
 		'send back the story\'s rev so a change the person made meanwhile is not overwritten.',
 	inputSchema: { type: 'object', properties: { story: STORY_REF }, additionalProperties: false },
 	async run(args, ctx) {
@@ -2763,7 +2806,7 @@ const getStories: ToolDef = {
 		const clipTags = Object.fromEntries(Object.entries(tags).map(([id, tag]) => [project.doc.media.find((a) => a.id === id)?.name ?? id, tag]))
 		return {
 			content: [json({
-				stories: shown.map((s) => storyRow(s, project.doc.media)),
+				stories: shown.map((s) => storyRow(s, project.doc.media, project.doc.multicams)),
 				clipTags: Object.keys(clipTags).length ? clipTags : undefined,
 				next: stories.length ? undefined : 'No stories yet: set_story makes one (get_words shows what each clip says).'
 			})],
@@ -2779,7 +2822,8 @@ const getWords: ToolDef = {
 		'What a clip says, word by word, in SOURCE seconds: the words the Story view shows, as readable lines with each ' +
 		'line\'s first and last word index and times. Use it to choose picks for set_story (quote the words, or give in/out). ' +
 		'Page through a long clip with fromSec/toSec. estimated: true means the transcript has no word timings (edges are ' +
-		'rough: import_transcript or transcribe_local gives real ones).',
+		'rough: import_transcript or transcribe_local gives real ones). For a clip in a camera group, `cameras` lists the group\'s ' +
+		'angles (number, name, files) and a line that not every camera recorded says which did (cameras: [2]).',
 	inputSchema: {
 		type: 'object',
 		properties: {
@@ -2804,12 +2848,23 @@ const getWords: ToolDef = {
 		const lines = wordsToLines(got.words, { maxGapSec: 0.6, maxWords: 24 }).filter((l) => l.end > from && l.start < to)
 		const LIMIT = 300
 		const page = lines.slice(0, LIMIT)
+		// For a clip in a camera group: which angles recorded each line (their numbers), when not all of them did.
+		const group = project.doc.multicams?.find((g) => g.members.some((m) => m.assetId === asset.id))
+		const camerasOn = (l: { start: number; end: number }) => {
+			if (!group) return {}
+			const member = storyMemberOf(group, asset.id)!
+			const [ga, gb] = [storyGroupTime(member, l.start), storyGroupTime(member, l.end)]
+			const all = storyAngles(group, project.doc.media)
+			const on = all.map((cam, i) => (storyCameraSpans(cam, project.doc.media).some((sp) => sp.start <= ga + 0.04 && sp.end >= gb - 0.04) ? i + 1 : 0)).filter(Boolean)
+			return on.length === all.length ? {} : { cameras: on }
+		}
 		const lastShown = page.at(-1)
 		const indexed = (w: Word, i: number) => [i, r3(w.start), r3(w.end), w.text]
 		return {
 			content: [json({
 				asset: asset.name, assetId: asset.id, wordCount: got.words.length, estimated: got.estimated || undefined,
-				lines: page.map((l) => ({ start: r3(l.start), end: r3(l.end), first: l.first, last: l.last, text: l.text })),
+				cameras: cameraInfo(project.doc.multicams, project.doc.media, asset.id),
+				lines: page.map((l) => ({ start: r3(l.start), end: r3(l.end), first: l.first, last: l.last, text: l.text, ...camerasOn(l) })),
 				words: args.words && lastShown
 					? got.words.map(indexed).slice(page[0].first, lastShown.last + 1)
 					: undefined,
@@ -2853,7 +2908,7 @@ async function writeStories(
 		throw new ToolError(e?.message || String(e))
 	}
 	await ctx.bridge.setStories(project, written.stories)
-	const row = storyRow(written.story, project.doc.media)
+	const row = storyRow(written.story, project.doc.media, project.doc.multicams)
 	return {
 		content: [json({
 			story: row, created: written.created || undefined,
@@ -2914,6 +2969,77 @@ const addPicks: ToolDef = {
 	run: (args, ctx) => writeStories(ctx, args, 'append')
 }
 
+const editPick: ToolDef = {
+	name: 'edit_pick',
+	permission: 'edit',
+	writes: true,
+	description:
+		'Change one pick of a story without resending the others: its camera (angle locks the whole pick to one camera; cuts ' +
+		'cut to cameras inside it, each from `at` in SOURCE seconds of the pick\'s clip, snapped to just before the word starting ' +
+		'there), its note, speaker or take. null clears angle or cuts (the pick then follows place_story\'s cameras mode). ' +
+		'get_stories lists each pick\'s cameras (which recorded all of it, how sure the sync is); get_words gives word times. ' +
+		'Send rev from get_stories. Then place_story puts the story on the timeline again.',
+	inputSchema: {
+		type: 'object',
+		properties: {
+			story: STORY_REF,
+			pick: { oneOf: [{ type: 'integer', minimum: 1 }, { type: 'string' }], description: 'The pick: its number (1, 2…) or id' },
+			angle: { oneOf: [{ type: 'integer', minimum: 1 }, { type: 'string' }, { type: 'null' }] },
+			cuts: {
+				oneOf: [{ type: 'null' }, {
+					type: 'array',
+					items: {
+						type: 'object',
+						properties: { at: { type: 'number', minimum: 0 }, angle: { oneOf: [{ type: 'integer', minimum: 1 }, { type: 'string' }] } },
+						required: ['at', 'angle'],
+						additionalProperties: false
+					}
+				}]
+			},
+			note: { type: 'string' },
+			speaker: { type: 'string' },
+			take: { type: 'string' },
+			rev: { type: 'integer', minimum: 0 }
+		},
+		required: ['story', 'pick'],
+		additionalProperties: false
+	},
+	title: (args) => `edit_pick ${String(args.story || '').slice(0, 24)} #${String(args.pick ?? '')}`,
+	async run(args, ctx) {
+		const project = await requireProject(ctx)
+		const stories = project.doc.stories ?? []
+		const story = findStory(stories, args.story)
+		if (!story) throw new ToolError(`There is no story "${args.story}". Stories: ${stories.map((s) => s.name).join(', ') || 'none'}.`)
+		const index = typeof args.pick === 'number' ? args.pick - 1 : story.picks.findIndex((p) => p.id === String(args.pick))
+		const pick = story.picks[index]
+		if (!pick) throw new ToolError(`"${story.name}" has no pick ${args.pick} (it has ${story.picks.length}).`)
+		const changed = { ...pick }
+		if ('angle' in args) { if (args.angle == null || args.angle === '') delete changed.angle; else changed.angle = args.angle }
+		if ('cuts' in args) {
+			if (!Array.isArray(args.cuts) || !args.cuts.length) delete changed.cuts
+			else {
+				if (args.cuts.some((c: any) => typeof c?.at !== 'number' || c.angle == null || c.angle === '')) throw new ToolError('Every cut needs at (SOURCE seconds) and angle (a camera number or name). Nothing was changed.')
+				const bad = args.cuts.filter((c: any) => !(c.at > pick.in - 0.5 && c.at < pick.out + 0.5))
+				if (bad.length) throw new ToolError(`Cut(s) at ${bad.map((c: any) => r3(c.at)).join(', ')} s are outside pick ${index + 1} (${r3(pick.in)}–${r3(pick.out)} s, SOURCE seconds of ${project.doc.media.find((a) => a.id === pick.assetId)?.name ?? 'its clip'}). Nothing was changed.`)
+				changed.cuts = args.cuts.map((c: any) => ({ at: Number(c.at), angle: c.angle })).sort((a: any, b: any) => a.at - b.at)
+			}
+		}
+		for (const key of ['note', 'speaker', 'take'] as const) if (typeof args[key] === 'string') changed[key] = args[key] || undefined
+		let written
+		try {
+			written = writeStory(stories, story.id, story.picks.map((p, i) => (i === index ? changed : p)), 'set', { rev: args.rev, by: 'agent' })
+		} catch (e: any) {
+			throw new ToolError(e?.message || String(e))
+		}
+		await ctx.bridge.setStories(project, written.stories)
+		const row = storyRow(written.story, project.doc.media, project.doc.multicams)
+		return {
+			content: [json({ story: written.story.name, rev: written.story.rev, pick: row.list[index], next: 'place_story puts it on the timeline with this choice.' })],
+			feed: { detail: `${written.story.name}: pick ${index + 1}` }
+		}
+	}
+}
+
 const placeStory: ToolDef = {
 	name: 'place_story',
 	permission: 'edit',
@@ -2923,10 +3049,19 @@ const placeStory: ToolDef = {
 		'order, back to back on the main video track, each cut with handles so no word is clipped (the in moves into the ' +
 		'quiet before the first word, the out to just before the next word or where the sound goes quiet). mode "replace" ' +
 		'(default) first removes what is on the main track; "append" adds after it. A clip in a camera group is laid as the ' +
-		'group, keeping its angle. Check the result with render_frame or get_timeline.',
+		'group (its main sound under it) and, with cameras "auto" (default), cuts between the group\'s cameras at pauses: just ' +
+		'before a word that follows a pause, every shot at least minShotSec (default 3), only to a camera that recorded all of ' +
+		'that stretch with a strong sync, and back to the camera the words came from. cameras "keep" lays every pick on the ' +
+		'camera its words came from. A pick\'s own cuts, then its angle lock, win over the mode (set them with edit_pick or ' +
+		'set_story). The result lists every camera pick\'s shots (timeline and SOURCE seconds, camera) and why a cut was not ' +
+		'made. Check the result with render_frames, get_angles or get_timeline.',
 	inputSchema: {
 		type: 'object',
-		properties: { story: STORY_REF, mode: { type: 'string', enum: ['replace', 'append'] } },
+		properties: {
+			story: STORY_REF, mode: { type: 'string', enum: ['replace', 'append'] },
+			cameras: { type: 'string', enum: ['auto', 'keep'], description: 'Camera groups: cut between cameras at pauses (auto, default) or keep each pick on its own camera' },
+			minShotSec: { type: 'number', minimum: 1, maximum: 30, description: 'auto: the shortest shot (default 3)' }
+		},
 		required: ['story'],
 		additionalProperties: false
 	},
@@ -2939,7 +3074,7 @@ const placeStory: ToolDef = {
 		const mode = args.mode === 'append' ? 'append' : 'replace'
 		const result = await commitStory(ctx.bridge, project, story, mode, {
 			name: ctx.clientName, sessionId: ctx.sessionId, ...(ctx.engineTurnId ? { engineTurnId: ctx.engineTurnId } : {})
-		})
+		}, { mode: args.cameras === 'keep' ? 'keep' : 'auto', minShotSec: typeof args.minShotSec === 'number' ? args.minShotSec : undefined })
 		if (!result.ok) {
 			const dropped = result.droppedOps?.length ? `\n- ${result.droppedOps.join('\n- ')}` : ''
 			throw new ToolError(`${result.error}${dropped}`)
@@ -2951,6 +3086,7 @@ const placeStory: ToolDef = {
 				undo: parent ? `revert_to_version ${parent.slice(1)} goes back to the state before this edit` : undefined,
 				placed: result.placed, of: story.picks.length, removed: result.removed || undefined,
 				timeline: { fromSec: result.fromSec, toSec: result.toSec },
+				cameraShots: result.cameraShots.length ? result.cameraShots : undefined,
 				droppedOps: result.droppedOps, notes: result.notes
 			})],
 			feed: { detail: `${story.name}: ${result.placed} picks on the timeline`, chips: [{ text: `V${result.outcome.revisionSeq}`, tone: 'violet' }] }
@@ -3024,7 +3160,7 @@ export const TOOLS: ToolDef[] = [
 	applyOps, revertToVersion, exportTool, inspectExport,
 	findCameraGroups, makeMulticam, getMulticam, getAngles, findSpeakers, getSpeakers,
 	findFaces, trackObject, listTracksTool, getTrack, editTrack,
-	getStories, getWords, setStory, addPicks, placeStory, importTranscript, transcribeLocal
+	getStories, getWords, setStory, addPicks, editPick, placeStory, importTranscript, transcribeLocal
 ]
 
 /**
