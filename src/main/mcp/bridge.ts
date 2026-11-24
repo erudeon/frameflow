@@ -6,6 +6,7 @@ import type { TranscriptEntry } from '@shared/captions'
 import type { AgentApplyOutcome } from '@shared/agentFeed'
 import type { AudioProvenance, GenerateRequest, ProviderId, SpendPolicy } from '@shared/audioProviders'
 import type { ObjectTrack, TrackShape } from '@shared/tracking'
+import type { ClipTag, Story, Word } from '@shared/story'
 
 /**
  * What the MCP tools need from the rest of the app, as an interface.
@@ -134,6 +135,26 @@ export interface FollowRequest {
 	onProgress?: (fraction: number, label: string) => void
 }
 
+/** A clip's words for Story: SOURCE seconds, with the measured quiet that placing a pick cuts into. */
+export interface StoryWords {
+	words: Word[]
+	/** Quiet stretches in SOURCE seconds; null when they could not be measured (no sound, no words). */
+	silences: { start: number; end: number }[] | null
+	/** The transcript has no word timings: the words were shared out over its sentences, so edges are rough. */
+	estimated?: boolean
+	/** The clip's loudness every 10 ms, when asked for (placing cuts at the sound); never sent to the renderer. */
+	envelope?: import('../story/place').Envelope | null
+}
+
+/** What importing or making a clip's word transcript came to. `words` is how many words it has. */
+export interface TranscriptWriteResult {
+	ok: boolean
+	words: number
+	estimated?: boolean
+	error?: string
+	notes?: string[]
+}
+
 export interface EditorBridge {
 	/** Null when no project is open in the editor. */
 	getLiveProject(): Promise<LiveProject | null>
@@ -217,4 +238,17 @@ export interface EditorBridge {
 	listTracks(project: LiveProject, assetId?: string): Promise<ObjectTrack[]>
 	saveTrack(project: LiveProject, track: ObjectTrack): Promise<void>
 	deleteTrack(project: LiveProject, track: Pick<ObjectTrack, 'id' | 'assetId'>): Promise<boolean>
+
+	// ----- Story (docs/story.md): words of every take, and the stories the editor keeps -----
+	/** A clip's words in SOURCE seconds and its measured quiet (measured once, cached beside the clip). */
+	storyWords(project: LiveProject, assetId: string, options?: { silences?: boolean; envelope?: boolean }): Promise<StoryWords>
+	/**
+	 * Replace the project's stories (and clip tags, when given). Stories are renderer-owned and outside undo, like
+	 * markers: the editor takes them as they are and saves them with the document.
+	 */
+	setStories(project: LiveProject, stories: Story[], clipTags?: Record<string, ClipTag>): Promise<void>
+	/** Make a word-level transcript file the clip's transcript (whisper.cpp JSON, {words:[...]}, SRT, VTT). */
+	importTranscript(project: LiveProject, assetId: string, filePath: string): Promise<TranscriptWriteResult>
+	/** Transcribe a clip on this Mac with whisper.cpp (word timings, free, offline); resolves when it is done. */
+	transcribeLocal(project: LiveProject, assetId: string, onProgress?: (percent: number, label: string) => void): Promise<TranscriptWriteResult>
 }

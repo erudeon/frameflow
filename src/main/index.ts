@@ -60,6 +60,7 @@ import { normalizeEngineSettings } from '@shared/engines'
 import { execFile } from 'child_process'
 import { getFFmpegBinaryPath } from './ffmpeg'
 import { initMotionIpc } from './motion/ipc'
+import { registerStoryIpc } from './story/ipc'
 import { abortEngineTurn, initEngines, resetEngineConversation, runEnginePrompt } from './engine'
 
 const activePipelines = new Map<string, Pipeline>()
@@ -150,6 +151,7 @@ app.whenReady().then(() => {
 	// MCP agent access: off unless the user turned it on in Settings.
 	initAgentAccess()
 	initMotionIpc()
+	registerStoryIpc()
 	initEngines()
 
 	createWindow()
@@ -520,6 +522,8 @@ app.whenReady().then(() => {
 			loudnessEnabled?: boolean
 			motionKits?: any[]
 			multicams?: any[]
+			stories?: any[]
+			clipTags?: Record<string, any>
 		}
 	}) => {
 		return await threadManager.updateThreadWith(threadId, (thread) => {
@@ -555,6 +559,9 @@ app.whenReady().then(() => {
 			if (patch.currentRevisionId !== undefined) editor.currentRevisionId = patch.currentRevisionId
 			if (patch.motionKits) editor.motionKits = patch.motionKits
 			if (patch.multicams) editor.multicams = patch.multicams
+			// Story (docs/story.md): renderer-owned like markers, outside the undo diff.
+			if (patch.stories) editor.stories = patch.stories
+			if (patch.clipTags) editor.clipTags = patch.clipTags
 
 			// Fold clip-selected flags into the matching clips (the one renderer-owned
 			// field living inside main-owned MediaAsset records).

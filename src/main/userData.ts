@@ -8,7 +8,9 @@ import { importStrayProjects, PINNED_DIR_NAME, pinnedUserDataDir, STRAY_DIR_NAME
  */
 if (!app.isPackaged) {
 	const appData = app.getPath('appData')
-	const pinned = pinnedUserDataDir(appData)
+	// FRAMEFLOW_USER_DATA: a dev copy with its own data folder, so it can run beside the installed app without
+	// both writing the same projects (24 Nov 2026: HOME is ignored by macOS for appData, this is the safe way)
+	const pinned = process.env.FRAMEFLOW_USER_DATA || pinnedUserDataDir(appData)
 	// The name too, not only the folder. The OS encrypts the stored API keys with
 	// a key that belongs to the app's NAME ("<name> Safe Storage" in the macOS
 	// keychain), and a bare `electron out/main/index.js` is named "Electron":

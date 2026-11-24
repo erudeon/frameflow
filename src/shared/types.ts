@@ -747,6 +747,8 @@ export interface RevisionSnapshot {
 	markers?: EditorMarker[]    // markers ride in the snapshot so switches restore them
 	motionKits?: MotionKit[]    // absent in revisions from before kits: none
 	multicams?: MulticamGroup[] // absent in revisions from before multicam: none
+	stories?: Story[]           // Story picks ride in the snapshot like markers; absent before Story
+	clipTags?: Record<string, ClipTag>
 }
 
 /**

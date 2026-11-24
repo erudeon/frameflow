@@ -89,7 +89,7 @@ vi.mock('../pipeline/phases/extraction', () => ({
 	}
 }))
 
-import { abortAssetPreprocessing, preparingLanes, preprocessMediaAsset } from './preprocess'
+import { abortAssetPreprocessing, preparingLanes, preprocessMediaAsset, transcribeFromSource, type TranscriptSource } from './preprocess'
 
 let tmp = ''
 const flush = async () => { for (let i = 0; i < 40; i++) await new Promise((r) => setTimeout(r, 0)) }
@@ -265,5 +265,57 @@ describe('the two import lanes', () => {
 		// segment step needs ffmpeg silence detection: not mocked, so it fails softly into the interval fallback
 		await settle(preprocessMediaAsset('t', 'a')).catch(() => {})
 		expect(asset().prepLanes).toBeUndefined()
+	})
+})
+
+describe('a transcript from another source (Story: import, whisper.cpp)', () => {
+	const writing = (text: string): TranscriptSource => ({
+		label: 'Importing the transcript…', model: 'the imported transcript', needsAudio: false,
+		async run(ctx) {
+			h.calls.push(`source in ${path.basename(ctx.assetDir)}`)
+			const dir = path.join(ctx.assetDir, 'transcripts'); fs.mkdirSync(dir, { recursive: true })
+			const file = path.join(dir, 'raw_transcript.json')
+			fs.writeFileSync(file, JSON.stringify([{ start: '00:00:01,000', end: '00:00:03,000', text, words: [{ start: 1, end: 3, text }] }]))
+			const a = h.thread.editor.media[0]
+			a.preprocessing = { ...a.preprocessing, rawTranscriptPath: file, transcriptPath: file }
+		}
+	})
+
+	it('runs as the words lane\'s transcript step, never calls Gemini, and the pieces get its words', async () => {
+		const result = await transcribeFromSource('t', 'a', writing('imported words'))
+		await flush()
+		expect(result).toEqual({ ok: true })
+		expect(h.calls).toContain('source in a')
+		expect(h.calls).not.toContain('transcript') // the Gemini extraction
+		expect(h.calls.some((c) => c.startsWith('audio'))).toBe(false) // an import needs no audio
+		expect(asset().prepLanes).toMatchObject({ words: { state: 'completed' } })
+		expect(spoken()).toEqual(['imported words'])
+		expect(h.tasks.get('a:transcript')).toMatchObject({ state: 'completed' })
+	})
+
+	it('extracts the audio first for a source that needs it, and hands it the path', async () => {
+		let heard: string | undefined
+		const result = await transcribeFromSource('t', 'a', { ...writing('x'), needsAudio: true, async run(ctx) { heard = ctx.audioPath; await writing('local words').run(ctx) } })
+		expect(result).toEqual({ ok: true })
+		expect(h.calls).toContain(`audio from ${asset().originalPath}`)
+		expect(heard).toMatch(/a\.mp3$/)
+	})
+
+	it('a source that fails says why and leaves the transcript there was', async () => {
+		asset().preprocessing = { transcriptPath: '/old/raw.json', rawTranscriptPath: '/old/raw.json' }
+		const result = await transcribeFromSource('t', 'a', { ...writing('x'), async run() { throw new Error('whisper.cpp heard no words in this clip.') } })
+		expect(result).toEqual({ ok: false, error: 'whisper.cpp heard no words in this clip.' })
+		expect(asset().preprocessing.transcriptPath).toBe('/old/raw.json')
+	})
+
+	it('is refused while the words lane is running', async () => {
+		const run = preprocessMediaAsset('t', 'a')
+		await flush()
+		expect(preparingLanes('t', 'a')).toContain('words')
+		const result = await transcribeFromSource('t', 'a', writing('x'))
+		expect(result.ok).toBe(false)
+		expect((result as any).error).toMatch(/being transcribed right now/)
+		h.gates.transcript.resolve(); h.gates.proxy.resolve()
+		await settle(run)
 	})
 })

@@ -70,6 +70,15 @@
 			</span>
 		</SlimTooltip>
 
+		<SlimTooltip text="Story: pick spoken moments from every take by their words" placement="bottom">
+			<button
+				class="h-[26px] shrink-0 whitespace-nowrap px-2.5 rounded-md text-xs font-semibold flex items-center gap-1.5 transition active:scale-95 text-zinc-600 dark:text-zinc-300 hover:text-primary hover:bg-primary/10"
+				aria-label="Open Story" data-testid="open-story" @click="$emit('story')">
+				<span class="iconify w-3.5 h-3.5 tabler--text-caption"></span>
+				<span class="tb-mid">Story</span>
+			</button>
+		</SlimTooltip>
+
 		<SlimTooltip v-if="showExport" :text="thumbnailBusy ? 'Making the thumbnail project…' : canThumbnail ? 'New thumbnail project from this video' : 'Add a video first'" placement="bottom">
 			<button
 				class="h-[26px] shrink-0 whitespace-nowrap px-2.5 rounded-md text-xs font-semibold flex items-center gap-1.5 transition active:scale-95 text-zinc-600 dark:text-zinc-300 hover:text-primary hover:bg-primary/10 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-transparent disabled:hover:text-zinc-600"
@@ -143,6 +152,7 @@ const emit = defineEmits<{
 	(e: 'rename', value: string): void
 	(e: 'export'): void
 	(e: 'thumbnail'): void
+	(e: 'story'): void
 }>()
 
 const router = useRouter()

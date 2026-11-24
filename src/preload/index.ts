@@ -266,6 +266,31 @@ const api = {
 		ipcRenderer.on('engine-activity', listener)
 		return () => ipcRenderer.removeListener('engine-activity', listener)
 	},
+	// Story (docs/story.md): every take's words, transcripts without Gemini, placing a story, picks files.
+	/** A clip's words in SOURCE seconds and its measured quiet: `{ words, silences, estimated? }`. */
+	getStoryWords: (threadId: string, assetId: string) =>
+		ipcRenderer.invoke('story-get-words', { threadId, assetId }),
+	/** `{ ok, words (a count), estimated?, notes?, error? }` */
+	importAssetTranscript: (threadId: string, assetId: string, filePath: string) =>
+		ipcRenderer.invoke('story-import-transcript', { threadId, assetId, filePath }),
+	/** whisper.cpp on this Mac; resolves when done: `{ ok, words (a count), error? }` */
+	transcribeAssetLocally: (threadId: string, assetId: string) =>
+		ipcRenderer.invoke('story-transcribe-local', { threadId, assetId }),
+	abortTranscribeLocally: (threadId: string, assetId: string) =>
+		ipcRenderer.invoke('story-abort-transcribe', { threadId, assetId }),
+	onStoryTranscribeProgress: (callback: (data: { threadId: string; assetId: string; percent: number; label: string }) => void) => {
+		const listener = (_event: any, data: any) => callback(data)
+		ipcRenderer.on('story-transcribe-progress', listener)
+		return () => ipcRenderer.removeListener('story-transcribe-progress', listener)
+	},
+	/** One turn (one revision): `{ placed, removed?, notes, droppedOps, revisionSeq?, error? }` */
+	placeStory: (threadId: string, story: unknown, mode: 'replace' | 'append') =>
+		ipcRenderer.invoke('story-place', { threadId, story, mode }),
+	readPicksFile: (path: string) => ipcRenderer.invoke('story-read-picks', path),
+	/** Writes the object (or JSON text) and makes the folder; resolves to the path written. */
+	writePicksFile: (path: string, data: unknown) => ipcRenderer.invoke('story-write-picks', { filePath: path, data }),
+	/** `{ folder }`: where picks files go by default (~/Studio/runs, expanded). */
+	storyDefaults: () => ipcRenderer.invoke('story-defaults'),
 	// The live-document bridge: main asks, the editor store answers.
 	onMcpRequest: (callback: (request: { id: string; kind: string; payload: any }) => void) => {
 		const listener = (_event: any, request: any) => callback(request)

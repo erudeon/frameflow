@@ -829,22 +829,36 @@ async function runTranscriptStep(
 		return
 	}
 
-	if (!exists(asset.preprocessing.audioPath)) {
+	// Another source (an imported file, whisper.cpp on this Mac) takes Gemini's place; everything after it is the same.
+	const source = transcriptSources.get(abortKey(threadId, assetId))
+
+	if (!source && !exists(asset.preprocessing.audioPath)) {
 		throw new Error('Audio must be extracted before transcription.')
 	}
 
 	await patchAsset(threadId, assetId, { transcriptError: undefined })
 
-	// A single Gemini call has no incremental signal — report honest stage
-	// milestones so the bar still moves: upload/transcribe → merge → done.
-	await setTask(threadId, assetId, 'transcript', {
-		state: 'running', status: 'Uploading audio & transcribing…', progress: 10
-	})
+	if (source) {
+		await setTask(threadId, assetId, 'transcript', { state: 'running', status: source.label, progress: 5 })
+		const thread = threadManager.getThread(threadId)!
+		await source.run({
+			threadId, assetId, signal,
+			assetDir: getAssetDir(thread, assetId),
+			audioPath: exists(getAsset(threadId, assetId)?.preprocessing.audioPath) ? getAsset(threadId, assetId)!.preprocessing.audioPath : undefined,
+			progress: (percent, status) => setTask(threadId, assetId, 'transcript', { state: 'running', status: status ?? source.label, progress: percent })
+		})
+	} else {
+		// A single Gemini call has no incremental signal — report honest stage
+		// milestones so the bar still moves: upload/transcribe → merge → done.
+		await setTask(threadId, assetId, 'transcript', {
+			state: 'running', status: 'Uploading audio & transcribing…', progress: 10
+		})
 
-	// Reuse the raw-transcript phase VERBATIM (single Gemini pass — the editor
-	// keeps transcription lean; the chat flow's corrected pass is not run here).
-	const context = createAssetContext(threadId, assetId, 'transcript', signal)
-	await extraction.extractRawTranscript({}, context)
+		// Reuse the raw-transcript phase VERBATIM (single Gemini pass — the editor
+		// keeps transcription lean; the chat flow's corrected pass is not run here).
+		const context = createAssetContext(threadId, assetId, 'transcript', signal)
+		await extraction.extractRawTranscript({}, context)
+	}
 
 	if (signal.aborted) throw new Error('Aborted')
 
@@ -1187,6 +1201,70 @@ async function runLane(
 		if (options.tracked) await setLane(threadId, assetId, lane, { state: 'error', error: message })
 		else await patchAsset(threadId, assetId, { preprocessState: 'error', preprocessError: message })
 	}
+}
+
+/**
+ * A transcript from somewhere other than Gemini (Story, docs/story.md): a word-level file the user imports, or
+ * whisper.cpp run on this Mac. It runs as the words lane's transcript step, so everything a finished transcript does
+ * afterwards (pieces, health, the lane's state, the editor refreshing its transcripts) happens the same way.
+ */
+export interface TranscriptSource {
+	/** What the transcript row says while it runs. */
+	label: string
+	/** Named in the error a person reads when it fails ("whisper.cpp"). */
+	model: string
+	/** It reads the extracted audio, so the audio step runs first. */
+	needsAudio: boolean
+	/** Write the transcript into the asset's transcripts/ folder and set its paths. Throws to fail. */
+	run(ctx: {
+		threadId: string
+		assetId: string
+		assetDir: string
+		audioPath?: string
+		signal: AbortSignal
+		progress: (percent: number, status?: string) => Promise<void>
+	}): Promise<void>
+}
+
+const transcriptSources = new Map<string, TranscriptSource>()
+
+/** Run the words lane with `source` making the transcript. Resolves when it is done; never runs Gemini. */
+export async function transcribeFromSource(
+	threadId: string,
+	assetId: string,
+	source: TranscriptSource
+): Promise<{ ok: true } | { ok: false; error: string }> {
+	const key = abortKey(threadId, assetId)
+	if (!getAsset(threadId, assetId)) return { ok: false, error: 'That clip is not in this project.' }
+	if (transcriptSources.has(key) || preparingLanes(threadId, assetId).includes('words')) {
+		return { ok: false, error: 'This clip is being transcribed right now. Wait for it to finish, then try again.' }
+	}
+	let ran = false
+	let failure: string | undefined
+	transcriptSources.set(key, {
+		...source,
+		async run(ctx) {
+			ran = true
+			try {
+				await source.run(ctx)
+			} catch (error: any) {
+				failure = error?.message || String(error)
+				if (error && typeof error === 'object') error.model = source.model
+				throw error
+			}
+		}
+	})
+	try {
+		await preprocessMediaAsset(threadId, assetId, { steps: source.needsAudio ? ['audio', 'transcript'] : ['transcript'] })
+	} finally {
+		transcriptSources.delete(key)
+	}
+	if (failure) return { ok: false, error: failure }
+	if (!ran) {
+		const reason = getAsset(threadId, assetId)?.transcriptError
+		return { ok: false, error: reason || 'The transcript step did not run (the audio could not be extracted, or the clip is busy).' }
+	}
+	return { ok: true }
 }
 
 export async function preprocessMediaAsset(

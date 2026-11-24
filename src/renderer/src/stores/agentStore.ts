@@ -233,6 +233,14 @@ export const useAgentStore = defineStore('agent', () => {
 				const ok = await editor.switchRevision(payload.revisionId, { force: true, engineTurnId: payload.engineTurnId })
 				return ok ? { ok: true } : { ok: false, error: 'The editor could not switch to that revision.' }
 			}
+			case 'editor-set-stories': {
+				// An agent wrote stories over MCP (set_story, add_picks): the renderer owns and saves them
+				if (!open) return { ok: false, error: 'No project is open in the editor.' }
+				if (payload?.threadId && payload.threadId !== editor.threadId) return { ok: false, error: 'That project is not the one open in the editor.' }
+				if (Array.isArray(payload?.stories)) editor.setStories(payload.stories)
+				if (payload?.clipTags && typeof payload.clipTags === 'object') editor.setClipTags(payload.clipTags)
+				return { ok: true }
+			}
 			case 'upsert-assets': {
 				// Sounds main generated for the agent: the store hears of them before any op can place them.
 				if (!open) return { ok: false, error: 'No project is open in the editor.' }

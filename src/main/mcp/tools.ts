@@ -43,6 +43,9 @@ import { aiReady, laneRecord, laneStatus, mediaReadiness, prepStatus } from '@sh
 import {
 	clipSourceTime, fillGaps, thinSamples, trackOnClip, trackSpans, type ObjectTrack, type TrackSample
 } from '@shared/tracking'
+import { storyDuration, wordsToLines, type Story, type Word } from '@shared/story'
+import { findStory, resolvePicks, writeStory, type PickRequest } from '../story/edit'
+import { commitStory } from '../story/commit'
 
 /**
  * Where one media file's preparation stands, for agents: the overall state as
@@ -2710,13 +2713,318 @@ const editTrack: ToolDef = {
 }
 
 
+// ===== Story: build edits from spoken words across many takes (docs/story.md) =====
+
+const STORY_REF = { type: 'string', description: 'The story id, or its name' }
+const PICK_SCHEMA = {
+	type: 'object',
+	description: 'One pick: asset with in/out (SOURCE seconds; snapped to the words said in between), or a quote (the words, ' +
+		'as get_words or search_moments show them; "first words ... last words" for a longer run).',
+	properties: {
+		asset: { type: 'string', description: 'Media id or file name (optional with a quote: every clip is searched)' },
+		in: { type: 'number', minimum: 0, description: 'SOURCE seconds' },
+		out: { type: 'number', minimum: 0, description: 'SOURCE seconds' },
+		quote: { type: 'string' },
+		speaker: { type: 'string' },
+		take: { type: 'string' },
+		note: { type: 'string' }
+	},
+	additionalProperties: false
+}
+
+/** A story as an agent reads it: every pick with its clip, its words and its length. */
+function storyRow(story: Story, media: MediaAsset[]) {
+	const name = (id: string) => media.find((a) => a.id === id)?.name ?? `(missing clip ${id})`
+	return {
+		id: story.id, name: story.name, rev: story.rev ?? 0, picks: story.picks.length, durationSec: r3(storyDuration(story)),
+		history: story.history?.length || undefined,
+		list: story.picks.map((p, i) => ({
+			n: i + 1, id: p.id, asset: name(p.assetId), assetId: p.assetId, in: r3(p.in), out: r3(p.out), sec: r3(p.out - p.in),
+			speaker: p.speaker, take: p.take, text: p.text, note: p.note
+		}))
+	}
+}
+
+const getStories: ToolDef = {
+	name: 'get_stories',
+	permission: 'read',
+	description:
+		'The project\'s stories: ordered lists of spoken picks across takes, one story per short form, that the person ' +
+		'builds in the Story view and you can build too. Each pick is a run of words from one clip (SOURCE seconds, the words, ' +
+		'speaker and take); clipTags says who is on each clip and which take it is. Read it before set_story or add_picks, and ' +
+		'send back the story\'s rev so a change the person made meanwhile is not overwritten.',
+	inputSchema: { type: 'object', properties: { story: STORY_REF }, additionalProperties: false },
+	async run(args, ctx) {
+		const project = await requireProject(ctx)
+		const stories = project.doc.stories ?? []
+		const shown = args.story ? [findStory(stories, args.story)].filter(Boolean) as Story[] : stories
+		if (args.story && !shown.length) throw new ToolError(`There is no story "${args.story}". Stories: ${stories.map((s) => s.name).join(', ') || 'none'}.`)
+		const tags = project.doc.clipTags ?? {}
+		const clipTags = Object.fromEntries(Object.entries(tags).map(([id, tag]) => [project.doc.media.find((a) => a.id === id)?.name ?? id, tag]))
+		return {
+			content: [json({
+				stories: shown.map((s) => storyRow(s, project.doc.media)),
+				clipTags: Object.keys(clipTags).length ? clipTags : undefined,
+				next: stories.length ? undefined : 'No stories yet: set_story makes one (get_words shows what each clip says).'
+			})],
+			feed: { detail: `${stories.length} stor${stories.length === 1 ? 'y' : 'ies'}` }
+		}
+	}
+}
+
+const getWords: ToolDef = {
+	name: 'get_words',
+	permission: 'read',
+	description:
+		'What a clip says, word by word, in SOURCE seconds: the words the Story view shows, as readable lines with each ' +
+		'line\'s first and last word index and times. Use it to choose picks for set_story (quote the words, or give in/out). ' +
+		'Page through a long clip with fromSec/toSec. estimated: true means the transcript has no word timings (edges are ' +
+		'rough: import_transcript or transcribe_local gives real ones).',
+	inputSchema: {
+		type: 'object',
+		properties: {
+			asset: { type: 'string', description: 'Media id or file name' },
+			fromSec: { type: 'number', minimum: 0 },
+			toSec: { type: 'number', minimum: 0 },
+			words: { type: 'boolean', description: 'Also list every word with its times (default false: lines only)' }
+		},
+		required: ['asset'],
+		additionalProperties: false
+	},
+	title: (args) => `get_words ${String(args.asset || '').slice(0, 24)}`,
+	async run(args, ctx) {
+		const project = await requireProject(ctx)
+		const asset = resolveAsset(project.doc.media, args.asset)
+		const got = await ctx.bridge.storyWords(project, asset.id, { silences: false })
+		if (!got.words.length) {
+			throw new ToolError(`${asset.name} has no transcript yet. transcribe_local (free, on this Mac) or import_transcript gives it word timings.`)
+		}
+		const from = args.fromSec ?? 0
+		const to = args.toSec ?? Infinity
+		const lines = wordsToLines(got.words, { maxGapSec: 0.6, maxWords: 24 }).filter((l) => l.end > from && l.start < to)
+		const LIMIT = 300
+		const page = lines.slice(0, LIMIT)
+		const lastShown = page.at(-1)
+		const indexed = (w: Word, i: number) => [i, r3(w.start), r3(w.end), w.text]
+		return {
+			content: [json({
+				asset: asset.name, assetId: asset.id, wordCount: got.words.length, estimated: got.estimated || undefined,
+				lines: page.map((l) => ({ start: r3(l.start), end: r3(l.end), first: l.first, last: l.last, text: l.text })),
+				words: args.words && lastShown
+					? got.words.map(indexed).slice(page[0].first, lastShown.last + 1)
+					: undefined,
+				next: lines.length > LIMIT && lastShown ? `fromSec ${r3(lastShown.end)} shows what comes next` : undefined
+			})],
+			feed: { detail: `${asset.name} · ${got.words.length} words` }
+		}
+	}
+}
+
+/** Stories as the live document has them, changed and handed back to the editor. */
+async function writeStories(
+	ctx: ToolContext, args: Record<string, any>, mode: 'set' | 'append'
+): Promise<ToolOutcome> {
+	const project = await requireProject(ctx)
+	const requests = (Array.isArray(args.picks) ? args.picks : []) as PickRequest[]
+	if (!requests.length && mode === 'append') throw new ToolError('add_picks needs at least one pick.')
+	const wordCache = new Map<string, Promise<Word[] | undefined>>()
+	const words = (assetId: string) => {
+		if (!wordCache.has(assetId)) {
+			wordCache.set(assetId, ctx.bridge.storyWords(project, assetId, { silences: false }).then((w) => w.words, () => undefined))
+		}
+		return wordCache.get(assetId)!
+	}
+	const defaults = { speaker: args.speaker, take: args.take }
+	let picks
+	try {
+		picks = await resolvePicks(requests.map((r) => ({ ...defaults, ...r })), {
+			media: project.doc.media,
+			resolveAsset: (ref) => resolveAsset(project.doc.media, ref),
+			words,
+			tags: project.doc.clipTags
+		})
+	} catch (e: any) {
+		throw new ToolError(e?.message || String(e))
+	}
+	let written
+	try {
+		written = writeStory(project.doc.stories ?? [], String(args.story || ''), picks, mode, { rev: args.rev, name: args.name, by: 'agent' })
+	} catch (e: any) {
+		throw new ToolError(e?.message || String(e))
+	}
+	await ctx.bridge.setStories(project, written.stories)
+	const row = storyRow(written.story, project.doc.media)
+	return {
+		content: [json({
+			story: row, created: written.created || undefined,
+			undo: written.created ? undefined : 'The picks before this write are the first entry of the story\'s history (the Story view can restore them).',
+			next: 'place_story puts it on the timeline; get_stories reads it back.'
+		})],
+		feed: { detail: `${written.story.name}: ${row.picks} picks · ${clock(storyDuration(written.story))}` }
+	}
+}
+
+const setStory: ToolDef = {
+	name: 'set_story',
+	permission: 'edit',
+	writes: true,
+	description:
+		'Create a story, or replace a story\'s picks, in the order given. A pick is asset + in/out (SOURCE seconds, snapped to ' +
+		'the words said between them) or a quote of the words said (searched in every clip, or in `asset`; a quote found in ' +
+		'several places is refused with the places, so add asset or in/out). The person sees the story at once in the Story view. ' +
+		'Send rev from get_stories: a story changed since is refused, not overwritten. The previous picks are kept in its history.',
+	inputSchema: {
+		type: 'object',
+		properties: {
+			story: { type: 'string', description: 'The story id or name; a name no story has makes a new one' },
+			name: { type: 'string', description: 'Rename the story' },
+			picks: { type: 'array', items: PICK_SCHEMA },
+			rev: { type: 'integer', minimum: 0, description: 'The rev get_stories showed' },
+			speaker: { type: 'string', description: 'Speaker for every pick that does not name one' },
+			take: { type: 'string', description: 'Take for every pick that does not name one' }
+		},
+		required: ['story', 'picks'],
+		additionalProperties: false
+	},
+	title: (args) => `set_story ${String(args.story || '').slice(0, 30)}`,
+	run: (args, ctx) => writeStories(ctx, args, 'set')
+}
+
+const addPicks: ToolDef = {
+	name: 'add_picks',
+	permission: 'edit',
+	writes: true,
+	description:
+		'Add picks to the end of an existing story, keeping the ones it has: the same pick forms as set_story (asset + in/out ' +
+		'in SOURCE seconds, or a quote). Send rev from get_stories: a story changed since is refused. The picks before are kept ' +
+		'in the story\'s history.',
+	inputSchema: {
+		type: 'object',
+		properties: {
+			story: STORY_REF,
+			picks: { type: 'array', items: PICK_SCHEMA, minItems: 1 },
+			rev: { type: 'integer', minimum: 0 },
+			speaker: { type: 'string' },
+			take: { type: 'string' }
+		},
+		required: ['story', 'picks'],
+		additionalProperties: false
+	},
+	title: (args) => `add_picks ${String(args.story || '').slice(0, 30)}`,
+	run: (args, ctx) => writeStories(ctx, args, 'append')
+}
+
+const placeStory: ToolDef = {
+	name: 'place_story',
+	permission: 'edit',
+	writes: true,
+	description:
+		'Put a story on the timeline in one edit (one revision), as the Story view\'s "Put on timeline" does: its picks in ' +
+		'order, back to back on the main video track, each cut with handles so no word is clipped (the in moves into the ' +
+		'quiet before the first word, the out to just before the next word or where the sound goes quiet). mode "replace" ' +
+		'(default) first removes what is on the main track; "append" adds after it. A clip in a camera group is laid as the ' +
+		'group, keeping its angle. Check the result with render_frame or get_timeline.',
+	inputSchema: {
+		type: 'object',
+		properties: { story: STORY_REF, mode: { type: 'string', enum: ['replace', 'append'] } },
+		required: ['story'],
+		additionalProperties: false
+	},
+	title: (args) => `place_story ${String(args.story || '').slice(0, 30)}`,
+	async run(args, ctx) {
+		const project = await requireProject(ctx)
+		const stories = project.doc.stories ?? []
+		const story = findStory(stories, args.story)
+		if (!story) throw new ToolError(`There is no story "${args.story}". Stories: ${stories.map((s) => s.name).join(', ') || 'none'}.`)
+		const mode = args.mode === 'append' ? 'append' : 'replace'
+		const result = await commitStory(ctx.bridge, project, story, mode, {
+			name: ctx.clientName, sessionId: ctx.sessionId, ...(ctx.engineTurnId ? { engineTurnId: ctx.engineTurnId } : {})
+		})
+		if (!result.ok) {
+			const dropped = result.droppedOps?.length ? `\n- ${result.droppedOps.join('\n- ')}` : ''
+			throw new ToolError(`${result.error}${dropped}`)
+		}
+		const parent = versionLabel(project, result.outcome.parentRevisionId)
+		return {
+			content: [json({
+				revision: `V${result.outcome.revisionSeq}`, revisionId: result.outcome.revisionId,
+				undo: parent ? `revert_to_version ${parent.slice(1)} goes back to the state before this edit` : undefined,
+				placed: result.placed, of: story.picks.length, removed: result.removed || undefined,
+				timeline: { fromSec: result.fromSec, toSec: result.toSec },
+				droppedOps: result.droppedOps, notes: result.notes
+			})],
+			feed: { detail: `${story.name}: ${result.placed} picks on the timeline`, chips: [{ text: `V${result.outcome.revisionSeq}`, tone: 'violet' }] }
+		}
+	}
+}
+
+const importTranscript: ToolDef = {
+	name: 'import_transcript',
+	permission: 'edit',
+	claims: true,
+	description:
+		'Make a transcript file the clip\'s transcript, with its word timings: whisper.cpp JSON (-oj, best with -ml 1), the ' +
+		'{"words":[{text,start,end}]} form (ElevenLabs, our footage catalogue), FrameFlow\'s own transcript JSON, or SRT/VTT ' +
+		'(sentence times only). Free and instant: no model runs. The transcript before is kept beside it. Captions, pieces, ' +
+		'search_moments and the Story view then read the new words.',
+	inputSchema: {
+		type: 'object',
+		properties: {
+			asset: { type: 'string', description: 'Media id or file name' },
+			path: { type: 'string', description: 'Absolute path of the transcript file' }
+		},
+		required: ['asset', 'path'],
+		additionalProperties: false
+	},
+	title: (args) => `import_transcript ${String(args.asset || '').slice(0, 24)}`,
+	async run(args, ctx) {
+		const project = await requireProject(ctx)
+		const asset = resolveAsset(project.doc.media, args.asset)
+		const result = await ctx.bridge.importTranscript(project, asset.id, String(args.path || ''))
+		if (!result.ok) throw new ToolError(result.error || 'The transcript could not be imported.')
+		return {
+			content: [json({ asset: asset.name, words: result.words, estimated: result.estimated || undefined, notes: result.notes, next: 'get_words reads it.' })],
+			feed: { detail: `${asset.name}: ${result.words} words imported` }
+		}
+	}
+}
+
+const transcribeLocal: ToolDef = {
+	name: 'transcribe_local',
+	permission: 'edit',
+	claims: true,
+	description:
+		'Transcribe a clip on this Mac with whisper.cpp (large-v3-turbo): word timings, free, offline, no API tokens. Takes ' +
+		'roughly a fifth of the clip\'s length; waits until it is done. Replaces the clip\'s transcript (the one before is kept ' +
+		'beside it). Refused while the clip is already being transcribed, or when whisper.cpp or its model is not on this Mac.',
+	inputSchema: {
+		type: 'object',
+		properties: { asset: { type: 'string', description: 'Media id or file name' } },
+		required: ['asset'],
+		additionalProperties: false
+	},
+	title: (args) => `transcribe_local ${String(args.asset || '').slice(0, 24)}`,
+	async run(args, ctx) {
+		const project = await requireProject(ctx)
+		const asset = resolveAsset(project.doc.media, args.asset)
+		const started = Date.now()
+		const result = await ctx.bridge.transcribeLocal(project, asset.id, (_percent, label) => ctx.progress?.(label, Date.now() - started))
+		if (!result.ok) throw new ToolError(result.error || 'Local transcription failed.')
+		return {
+			content: [json({ asset: asset.name, words: result.words, seconds: Math.round((Date.now() - started) / 1000), next: 'get_words reads it.' })],
+			feed: { detail: `${asset.name}: ${result.words} words (whisper.cpp)` }
+		}
+	}
+}
+
 export const TOOLS: ToolDef[] = [
 	beginRound, endRound, listProjects, createProject, openProject, importMedia, transcribeMedia, waitTool,
 	getProject, getTimeline, getMedia, inspectMedia, findSilences, searchMomentsTool, renderFrame, renderFrames, getMotionGuide, getMotionKit,
 	getSoundGuide, listSounds, suggestCuesTool, renderSoundTool, analyzeAudio, inspectAudioTool, generateAudioTool,
 	applyOps, revertToVersion, exportTool, inspectExport,
 	findCameraGroups, makeMulticam, getMulticam, getAngles, findSpeakers, getSpeakers,
-	findFaces, trackObject, listTracksTool, getTrack, editTrack
+	findFaces, trackObject, listTracksTool, getTrack, editTrack,
+	getStories, getWords, setStory, addPicks, placeStory, importTranscript, transcribeLocal
 ]
 
 /**

@@ -85,6 +85,10 @@ export function createTurnSession(options: TurnSessionOptions): TurnSession {
 		createProject: (t) => options.bridge.createProject(t),
 		openProject: (id) => options.bridge.openProject(id),
 		importMedia: (p, src, cb) => options.bridge.importMedia(p, src, cb),
+		storyWords: (p, id, o) => options.bridge.storyWords(p, id, o),
+		setStories: (p, s, t) => options.bridge.setStories(p, s, t),
+		importTranscript: (p, id, f) => options.bridge.importTranscript(p, id, f),
+		transcribeLocal: (p, id, cb) => options.bridge.transcribeLocal(p, id, cb),
 		async commitTurn(commit) {
 			const outcome: ApplyOutcome = await options.bridge.commitTurn(commit)
 			if (outcome.ok) {

@@ -11,7 +11,7 @@
 				:locked-by="editorStore.agentHolds"
 				:percent="editorStore.renderState?.percent ?? 0"
 				:can-thumbnail="canThumbnail" :thumbnail-busy="thumbnailBusy"
-				@back="router.push('/home')" @rename="editorStore.renameProject($event)" @export="showExport = true" @thumbnail="openThumbnailPrompt">
+				@back="router.push('/home')" @rename="editorStore.renameProject($event)" @export="showExport = true" @thumbnail="openThumbnailPrompt" @story="editorStore.storyOpen = true">
 				<template v-if="agentStore.editingSession" #center>
 					<AgentBanner />
 				</template>
@@ -71,6 +71,7 @@
 			<ThumbnailPromptDialog v-model="showThumbnailPrompt" :suggested="thumbnailBrief.text" :busy="thumbnailBusy"
 				@generate="makeThumbnail" />
 			<ShortcutsOverlay />
+			<StoryView v-if="editorStore.storyOpen" @close="editorStore.storyOpen = false" />
 		</template>
 
 		<!-- Files or folders dragged in from the OS: they go to the Media panel. -->
@@ -96,6 +97,7 @@ import LeftPanel, { type LeftMode, type LeftTab } from './components/LeftPanel.v
 import PreviewMonitor from './components/PreviewMonitor.vue'
 import TimelinePanel from './components/TimelinePanel.vue'
 import ShortcutsOverlay from './components/ShortcutsOverlay.vue'
+import StoryView from './components/StoryView.vue'
 import ChatColumn from './components/ChatColumn.vue'
 import type { ChatTab } from './chatTab'
 import ComposerStrip from './components/ComposerStrip.vue'

@@ -111,7 +111,8 @@ describe('AgentServer over Streamable HTTP', () => {
 			'get_sound_guide', 'list_sounds', 'suggest_cues', 'render_sound', 'analyze_audio', 'inspect_audio', 'generate_audio',
 			'apply_ops', 'revert_to_version', 'export', 'inspect_export',
 			'find_camera_groups', 'make_multicam', 'get_multicam', 'get_angles', 'find_speakers', 'get_speakers',
-			'find_faces', 'track_object', 'list_tracks', 'get_track', 'edit_track'
+			'find_faces', 'track_object', 'list_tracks', 'get_track', 'edit_track',
+			'get_stories', 'get_words', 'set_story', 'add_picks', 'place_story', 'import_transcript', 'transcribe_local'
 		])
 		const apply = tools.find((t) => t.name === 'apply_ops')!
 		expect(Object.keys(apply.inputSchema.properties || {})).toContain('removeRanges')
@@ -1042,6 +1043,98 @@ describe('AgentServer over Streamable HTTP', () => {
 
 			editor.exportPhase = 'rendering'
 			expect((await claude.callTool({ name: 'inspect_export', arguments: {} }) as any).isError).toBe(true)
+		})
+	})
+
+	describe('Story: picks across takes, shared with the person', () => {
+		it('reads a clip\'s words as lines with word indexes', async () => {
+			const client = await connect()
+			const got = text(await client.callTool({ name: 'get_words', arguments: { asset: 'greeting_team.mp4', words: true } }))
+			expect(got.wordCount).toBe(15)
+			expect(got.lines.map((l: any) => l.text)).toEqual(['Hello and welcome to the team.', 'How much faster is triage now?', 'Three times faster.'])
+			expect(got.lines[1]).toMatchObject({ first: 6, last: 11, start: 21 })
+			expect(got.words[6]).toEqual([6, 21, 21.28, 'How'])
+			const none: any = await client.callTool({ name: 'get_words', arguments: { asset: 'nothing.mp4' } })
+			expect(none.isError).toBe(true)
+		})
+
+		it('makes a story from quotes and source ranges, hands it to the editor, and reads it back', async () => {
+			const client = await connect()
+			const made = text(await client.callTool({ name: 'set_story', arguments: {
+				story: 'Q1 triage', speaker: 'Ana',
+				picks: [{ quote: 'how much faster ... now' }, { asset: 'team', in: 24.1, out: 25.5, take: '2' }]
+			} }))
+			expect(made.created).toBe(true)
+			expect(made.story).toMatchObject({ name: 'Q1 triage', rev: 1, picks: 2 })
+			expect(made.story.list.map((p: any) => p.text)).toEqual(['How much faster is triage now?', 'Three times faster.'])
+			expect(made.story.list[1]).toMatchObject({ speaker: 'Ana', take: '2', in: 24.2, out: 25.4 })
+			expect(editor.storyWrites).toBe(1)
+			expect(editor.doc.stories).toHaveLength(1)
+
+			const read = text(await client.callTool({ name: 'get_stories', arguments: {} }))
+			expect(read.stories[0]).toMatchObject({ name: 'Q1 triage', rev: 1, picks: 2 })
+			expect(read.stories[0].list[0]).toMatchObject({ n: 1, asset: 'greeting_team.mp4', text: 'How much faster is triage now?' })
+		})
+
+		it('refuses a stale rev and an ambiguous or missing quote without writing anything', async () => {
+			const client = await connect()
+			await client.callTool({ name: 'set_story', arguments: { story: 'Q1', picks: [{ quote: 'three times faster' }] } })
+			await client.callTool({ name: 'add_picks', arguments: { story: 'Q1', rev: 1, picks: [{ quote: 'hello and welcome' }] } })
+			expect(editor.doc.stories![0].rev).toBe(2)
+			expect(editor.doc.stories![0].history).toHaveLength(1)
+			const writes = editor.storyWrites
+
+			const stale: any = await client.callTool({ name: 'set_story', arguments: { story: 'Q1', rev: 1, picks: [{ quote: 'hello' }] } })
+			expect(stale.isError).toBe(true)
+			expect(stale.content[0].text).toMatch(/changed since you read it \(it is at rev 2, you sent rev 1\)/)
+			const twice: any = await client.callTool({ name: 'add_picks', arguments: { story: 'Q1', picks: [{ quote: 'faster' }] } })
+			expect(twice.isError).toBe(true)
+			expect(twice.content[0].text).toMatch(/said in 2 places/)
+			const missing: any = await client.callTool({ name: 'add_picks', arguments: { story: 'Q1', picks: [{ quote: 'never said' }] } })
+			expect(missing.isError).toBe(true)
+			expect(editor.storyWrites).toBe(writes)
+			expect(editor.doc.stories![0].picks).toHaveLength(2)
+		})
+
+		it('places a story as one revision: the main track replaced by the picks, back to back, with handles', async () => {
+			const client = await connect()
+			await client.callTool({ name: 'set_story', arguments: { story: 'Cut', picks: [{ quote: 'three times faster' }, { quote: 'how much faster is triage now' }] } })
+			const placed = text(await client.callTool({ name: 'place_story', arguments: { story: 'Cut' } }))
+			expect(placed).toMatchObject({ revision: 'V1', placed: 2, of: 2, removed: 1 })
+			const commit = editor.commits.at(-1)!
+			expect(commit.turn.rationale).toBe('Story: Cut')
+			expect(commit.turn.agent!.name).toBe('Claude Code')
+			const clips = [...editor.doc.timeline].sort((a, b) => a.timelineStart - b.timelineStart)
+			expect(clips.map((c) => c.sourceAssetId)).toEqual(['team', 'team'])
+			expect(clips[0].timelineStart).toBe(0)
+			expect(clips[1].timelineStart).toBeCloseTo(clips[0].duration, 3)
+			// "Three times faster." from 24.2: it opens in the quiet before it and runs into the quiet after it.
+			expect(clips[0].in).toBeLessThan(24.2)
+			expect(clips[0].in).toBeGreaterThanOrEqual(23.3)
+			expect(clips[0].out).toBeGreaterThan(25.4)
+			expect(clips[1].in).toBeLessThan(21)
+			expect(clips[1].out).toBeGreaterThanOrEqual(23.28)
+			const append = text(await client.callTool({ name: 'place_story', arguments: { story: 'Cut', mode: 'append' } }))
+			expect(append).toMatchObject({ placed: 2 })
+			expect(editor.doc.timeline).toHaveLength(4)
+			const unknown: any = await client.callTool({ name: 'place_story', arguments: { story: 'Nope' } })
+			expect(unknown.isError).toBe(true)
+		})
+
+		it('imports a transcript file and transcribes on this Mac through the editor', async () => {
+			const client = await connect()
+			const imported = text(await client.callTool({ name: 'import_transcript', arguments: { asset: 'team', path: '/tmp/team.words.json' } }))
+			expect(imported).toMatchObject({ asset: 'greeting_team.mp4', words: 15 })
+			const local = text(await client.callTool({ name: 'transcribe_local', arguments: { asset: 'greeting_team.mp4' } }))
+			expect(local).toMatchObject({ words: 15 })
+			expect(editor.transcriptJobs).toEqual([
+				{ kind: 'import', assetId: 'team', filePath: '/tmp/team.words.json' },
+				{ kind: 'local', assetId: 'team' }
+			])
+			editor.transcriptResult = { ok: false, words: 0, error: 'whisper.cpp is not installed on this Mac.' }
+			const failed: any = await client.callTool({ name: 'transcribe_local', arguments: { asset: 'team' } })
+			expect(failed.isError).toBe(true)
+			expect(failed.content[0].text).toContain('whisper.cpp is not installed')
 		})
 	})
 })
