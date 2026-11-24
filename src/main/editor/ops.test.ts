@@ -410,7 +410,7 @@ describe('opsToDiff / B-roll on another video track', () => {
 		expect(items(result).map((i) => i.timelineStart)).toEqual([5, 20])
 		// The main track is still packed
 		expect(result.diff.updateItems).toEqual([{ id: 'i1', timelineStart: 0 }])
-		expect(result.notes.join(' ')).toMatch(/left V2 where they were/)
+		expect(result.notes.join(' ')).toMatch(/did not pack V2/)
 	})
 
 	it('ripples a new track with a range cut in the same call, as an existing one does', () => {

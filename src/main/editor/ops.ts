@@ -1115,7 +1115,7 @@ export function opsToDiff(
 		} else {
 			moved = rippleTimeline(working, changes, pinnedIds)
 		}
-		if (overlays.length) notes.push(`closeGaps left ${overlays.map((t) => t.name).join(', ')} where they were: they sit over the picture.`)
+		if (overlays.length) notes.push(`closeGaps did not pack ${overlays.map((t) => t.name).join(', ')}: they sit over the picture.`)
 
 		if (moved) {
 			const updates = diff.updateItems ? [...diff.updateItems] : []
