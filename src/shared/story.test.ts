@@ -47,8 +47,8 @@ describe('placeRange: no word ever clips', () => {
 	it('opens halfway into the pause before and closes before the next word starts', () => {
 		const p = pickFromWords('a1', words, 2, 6)!
 		const r = placeRange(p, words)
-		expect(r.in).toBeGreaterThanOrEqual(1.8); expect(r.in).toBeLessThan(3.0)
-		expect(r.out).toBeGreaterThanOrEqual(4.2); expect(r.out).toBeLessThan(4.5)
+		expect(r.in).toBeCloseTo(2.92, 2)
+		expect(r.out).toBeCloseTo(4.46, 2)
 	})
 	it('never reaches into the word before, even with no pause', () => {
 		const tight = [W('a', 0, 1.0), W('b', 1.0, 1.5), W('c', 1.5, 2.0)]
@@ -63,9 +63,13 @@ describe('placeRange: no word ever clips', () => {
 	it('closes where the audio goes quiet when whisper ends the last word early (Julian, 24 Nov)', () => {
 		const j = [W('take', 142.64, 143.0), W('one.', 143.0, 143.24), W('Cool.', 144.94, 145.34)]
 		const r = placeRange(pickFromWords('x', j, 0, 1)!, j, undefined, [{ start: 143.82, end: 144.9 }])
-		expect(r.out).toBeGreaterThanOrEqual(143.85); expect(r.out).toBeLessThan(144.0)
+		expect(r.out).toBeCloseTo(143.9, 2)
 		const noSil = placeRange(pickFromWords('x', j, 0, 1)!, j)
 		expect(noSil.out).toBeGreaterThanOrEqual(143.8)
+	})
+	it('starts inside the quiet before the first word when the silences show it', () => {
+		const r = placeRange(pickFromWords('x', words, 2, 6)!, words, undefined, [{ start: 1.9, end: 2.96 }])
+		expect(r.in).toBeCloseTo(2.92, 2)
 	})
 	it('clamps to the file', () => {
 		const r = placeRange(pickFromWords('x', words, 0, 0)!, words, 10)
@@ -81,6 +85,9 @@ describe('stories and picks files', () => {
 		expect(matchAsset('/other/DJI_20261123171818_0126_D.MP4', assets)?.id).toBe('a2')
 		expect(matchAsset('/other/DJI_20261123171818_0126_D.LRF', assets)?.id).toBe('a2')
 		expect(matchAsset('/x/nothing.mov', assets)).toBeUndefined()
+		const twins = [{ id: 'c1', name: 'C001.mov', path: '/camA/C001.mov', duration: 30 }, { id: 'c2', name: 'C001.mov', path: '/camB/C001.mov', duration: 200 }]
+		expect(matchAsset('/elsewhere/C001.mov', twins)).toBeUndefined()
+		expect(matchAsset('/elsewhere/C001.mov', twins, 120)?.id).toBe('c2')
 	})
 	it('round-trips a story through the shared picks file', () => {
 		const st = { id: 's', name: 'Q1', picks: [pickFromWords('a1', words, 0, 1, { speaker: 'Julian', take: '3' })!] }

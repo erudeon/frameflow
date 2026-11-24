@@ -32,9 +32,16 @@ export interface Story {
 	id: string
 	name: string
 	picks: StoryPick[]
+	/** Bumped on every change; set_story refuses a write made against an older rev. */
+	rev?: number
+	/** The last few versions of the picks, newest first, so a bad write can be undone. */
+	history?: { at: number; by: 'person' | 'agent'; picks: StoryPick[] }[]
 	createdAt?: number
 	updatedAt?: number
 }
+
+/** Who is on a clip and which take it is: set once per clip, shown on every pick. */
+export interface ClipTag { speaker?: string; take?: string; star?: boolean; group?: string }
 
 /** The shared picks file (FrameFlow Story, the rescript fork, the compositor). Extra keys are allowed and ignored. */
 export interface PicksFile {
@@ -144,12 +151,15 @@ export function pickWordRange(pick: StoryPick, words: Word[]): [number, number] 
 	return a < 0 ? null : [a, b]
 }
 
-export const HANDLE = { preMax: 0.25, postMax: 0.7, minGap: 0.06 }
+export const HANDLE = { lead: 0.08, tail: 0.04, longGap: 0.6, endPad: 0.08, noSilenceTail: 0.7, snapBack: 0.25 }
 
 /**
- * Source in/out to place a pick so no word clips. Word STARTS are the reliable edge (whisper's ends run long or short),
- * so: the cut opens a little before the first word, at most halfway into the pause before it; it closes just before
- * the NEXT word starts (never past it), at most `postMax` after the last word's start-based end.
+ * Source in/out to place a pick so no word clips. Rule (Fable review, 24 Nov): whisper word STARTS are reliable, its
+ * word ENDS are not (24 Nov: "one." ended at 143.24 by whisper, 143.8 by the audio), so no edge is taken from a word end.
+ * - in: just before the first word starts (0.08 s, less when the word before runs right into it), moved back into
+ *   the quiet before it when the measured silences show one within 0.25 s.
+ * - out: just before the NEXT word starts; when there is no next word, or the pause before it is long, where the audio
+ *   goes quiet after the last word (the clip's measured silences), else 0.7 s after the last word's end.
  */
 export function placeRange(pick: StoryPick, words: Word[], sourceDuration?: number,
 	silences?: { start: number; end: number }[]): { in: number; out: number } {
@@ -157,18 +167,20 @@ export function placeRange(pick: StoryPick, words: Word[], sourceDuration?: numb
 	if (!r) return { in: pick.in, out: pick.out }
 	const [a, b] = r
 	const first = words[a], last = words[b], prev = words[a - 1], next = words[b + 1]
-	let inT = first.start - HANDLE.preMax
-	if (prev) inT = Math.max(inT, (Math.min(prev.end, first.start) + first.start) / 2)   // halfway into the pause, never into the word before
-	inT = Math.min(inT, first.start - 0.02)
-	// whisper ends a last word early by up to ~0.6 s (24 Nov: "one." 143.24 vs audio 143.8): allow a long tail,
-	// and when the clip's measured silences are known, close where the speech actually stops
-	let outT = Math.max(last.end, last.start + 0.12) + HANDLE.postMax
-	const quiet = silences?.find((s) => s.end > last.start + 0.15 && s.start >= last.start + 0.1)
-	if (quiet) outT = Math.min(outT + 0.4, quiet.start + 0.08)
-	if (next) outT = Math.min(outT, next.start - HANDLE.minGap)
-	outT = Math.max(outT, last.end, last.start + 0.12)
-	const before = silences?.filter((s) => s.end <= first.start + 0.02).pop()
-	if (before && (!prev || before.start >= prev.start)) inT = Math.max(inT, Math.min(before.end - 0.05, first.start - 0.02))
+	const lead = prev ? Math.min(HANDLE.lead, Math.max(0.02, first.start - prev.end)) : HANDLE.lead
+	let inT = first.start - lead
+	const quietBefore = silences?.filter((q) => q.end >= first.start - HANDLE.snapBack && q.end <= first.start + 0.02).pop()
+	if (quietBefore) inT = Math.min(inT, Math.max(quietBefore.start, quietBefore.end - 0.04))
+	if (prev) inT = Math.max(inT, prev.start + 0.05)
+	const longPause = !next || next.start - last.end > HANDLE.longGap
+	let outT: number
+	if (!longPause) outT = next!.start - HANDLE.tail
+	else {
+		const quietAfter = silences?.find((q) => q.start >= last.start + 0.1 && q.end > last.start + 0.15)
+		outT = quietAfter ? quietAfter.start + HANDLE.endPad : Math.max(last.end, last.start + 0.12) + HANDLE.noSilenceTail
+		if (next) outT = Math.min(outT, next.start - HANDLE.tail)
+	}
+	outT = Math.max(outT, last.start + 0.12)
 	inT = Math.max(0, inT)
 	if (sourceDuration != null) outT = Math.min(outT, sourceDuration)
 	return { in: round3(inT), out: round3(outT) }
@@ -192,23 +204,32 @@ export function movePick(story: Story, from: number, to: number): Story {
 
 // ---------------------------------------------------------------- picks files
 
-export interface AssetRef { id: string; name: string; path?: string }
+export interface AssetRef { id: string; name: string; path?: string; duration?: number }
 
 const base = (p: string) => p.split(/[\\/]/).pop()!.toLowerCase().replace(/\.(lrf|proxy\.mp4)$/i, '')
 const stem = (p: string) => base(p).replace(/\.[^.]+$/, '')
 
-/** Match a picks-file source to an imported asset: same path, then same file name, then same name without extension. */
-export function matchAsset(source: string, assets: AssetRef[]): AssetRef | undefined {
-	return assets.find((a) => a.path && a.path === source)
-		?? assets.find((a) => (a.path && base(a.path) === base(source)) || a.name.toLowerCase() === base(source))
-		?? assets.find((a) => (a.path && stem(a.path) === stem(source)) || stem(a.name) === stem(source))
+/**
+ * Match a picks-file source to an imported asset: same path; else same file name (or name without extension), and when
+ * several assets share it, the one whose length covers the pick. Ambiguous or missing: undefined (the caller reports it).
+ */
+export function matchAsset(source: string, assets: AssetRef[], pickOut?: number): AssetRef | undefined {
+	const exact = assets.find((a) => a.path && a.path === source)
+	if (exact) return exact
+	for (const key of [base, stem]) {
+		let c = assets.filter((a) => (a.path && key(a.path) === key(source)) || key(a.name) === key(source))
+		if (c.length > 1 && pickOut != null) c = c.filter((a) => a.duration == null || a.duration >= pickOut - 0.05)
+		if (c.length === 1) return c[0]
+		if (c.length > 1) return undefined
+	}
+	return undefined
 }
 
 export function storyFromPicksFile(file: PicksFile, assets: AssetRef[]): { story: Story; unmatched: string[] } {
 	const unmatched: string[] = []
 	const picks: StoryPick[] = []
 	for (const p of file.picks ?? []) {
-		const a = matchAsset(String(p.source), assets)
+		const a = matchAsset(String(p.source), assets, Number(p.out))
 		if (!a) { unmatched.push(String(p.source)); continue }
 		picks.push({ id: newPickId(), assetId: a.id, in: Number(p.in), out: Number(p.out), speaker: p.speaker, take: p.take,
 			text: String(p.text ?? ''), note: p.note,
