@@ -190,6 +190,28 @@ describe('AgentServer over Streamable HTTP', () => {
 		expect(editor.commits).toHaveLength(0)
 	})
 
+	it('refuses a dB value sent as the linear gain instead of muting the clip', async () => {
+		const client = await connect()
+		const refused: any = await client.callTool({ name: 'apply_ops', arguments: { updateItems: [{ id: 'i1', gain: -3 }] } })
+		expect(refused.isError).toBe(true)
+		expect(refused.content[0].text).toMatch(/updateItems\[0\]\.gain: must be ≥ 0/)
+		expect(editor.commits).toHaveLength(0)
+		expect(editor.doc.timeline[0].gain).toBeUndefined()
+
+		const applied: any = await client.callTool({ name: 'apply_ops', arguments: { updateItems: [{ id: 'i1', gainDb: -3 }] } })
+		expect(applied.isError).toBeFalsy()
+		expect(editor.doc.timeline[0].gain).toBeCloseTo(0.708, 3)
+	})
+
+	it('describes gain as linear and offers gainDb in the apply_ops schema', async () => {
+		const client = await connect()
+		const { tools } = await client.listTools()
+		const update = (tools.find((t) => t.name === 'apply_ops')!.inputSchema as any).properties.updateItems.items.properties
+		expect(update.gain).toMatchObject({ minimum: 0, maximum: 2 })
+		expect(update.gain.description).toMatch(/LINEAR/)
+		expect(update.gainDb).toMatchObject({ minimum: -60, maximum: 6 })
+	})
+
 	it('gates edits and export on the Agent access permissions', async () => {
 		const client = await connect()
 		const exported: any = await client.callTool({ name: 'export', arguments: {} })

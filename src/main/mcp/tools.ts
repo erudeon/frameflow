@@ -631,7 +631,8 @@ const SOUND_OPS_SCHEMA = {
 				asset: { type: 'string', description: 'The audio asset id generate_audio returned (or one from get_media)' },
 				atSec: { type: 'number', minimum: 0, description: 'Timeline seconds. Not needed with follow' },
 				follow: FOLLOW_SCHEMA,
-				gain: { type: 'number', minimum: 0, maximum: 2, description: 'Level for this clip; 1 leaves it as made' }
+				gain: { type: 'number', minimum: 0, maximum: 2, description: 'LINEAR level for this clip, not dB: 1 leaves it as made, 0.5 is about -6 dB. Out of range is refused. For decibels use gainDb.' },
+				gainDb: { type: 'number', minimum: -60, maximum: 6, description: 'The same level in decibels (0 leaves it as made). Give gain or gainDb, not both.' }
 			},
 			required: ['asset'],
 			additionalProperties: false

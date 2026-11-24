@@ -918,7 +918,10 @@ export interface EditorOps {
 		out?: number
 		speed?: number
 		label?: string
+		/** LINEAR level, 0 to 2 (1 is unchanged). */
 		gain?: number
+		/** The same level in decibels, -60 to +6; give gain or gainDb, not both. */
+		gainDb?: number
 		fadeInSec?: number
 		fadeOutSec?: number
 		/** Move, scale or rotate inside the frame (Phase 3's free transform). */
@@ -972,8 +975,10 @@ export interface EditorOps {
 		asset: string
 		atSec?: number
 		follow?: { item: string; at?: 'start' | 'out' | 'end'; leadSec?: number }
-		/** Mix level for this clip, 0 to 2 (1 is unchanged). */
+		/** Mix level for this clip, LINEAR, 0 to 2 (1 is unchanged). */
 		gain?: number
+		/** The same level in decibels, -60 to +6; give gain or gainDb, not both. */
+		gainDb?: number
 	}>
 	/** What an audio track is for: the mix levels each by it, and a music bed ducks under speech. */
 	setTrackRoles?: Array<{ trackId: string; role: 'voice' | 'music' | 'sfx' | 'none' }>

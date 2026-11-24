@@ -8,6 +8,7 @@ import {
 	rippleTimeline, TIMELINE_DIFF_SCHEMA_VERSION, type RippleChange
 } from '@shared/timeline'
 import { clampPan } from '@shared/framing'
+import { resolveGainRequest } from '@shared/audio'
 import { planRangeRemoval } from '@shared/rangeEdit'
 import { KEY_DEFAULTS } from '@shared/keying'
 import { GENERATOR_DEFAULTS, GENERATORS } from '@shared/generators'
@@ -137,7 +138,14 @@ export const EDITOR_OPS_SCHEMA = {
 					out: { type: 'number' },
 					speed: { type: 'number' },
 					label: { type: 'string' },
-					gain: { type: 'number' },
+					gain: {
+						type: 'number', minimum: 0, maximum: 2,
+						description: 'LINEAR level, not dB: 1 leaves it as made, 0.5 is about -6 dB, 2 about +6 dB, 0 mutes. Out of range is refused. For decibels use gainDb.'
+					},
+					gainDb: {
+						type: 'number', minimum: -60, maximum: 6,
+						description: 'The same level in decibels (0 leaves it as made, -6 halves it). Give gain or gainDb, not both.'
+					},
 					fadeInSec: { type: 'number' },
 					fadeOutSec: { type: 'number' },
 					transform: {
@@ -534,8 +542,11 @@ export function opsToDiff(
 			if (typeof update.out === 'number') clean.out = update.out
 			if (typeof update.speed === 'number') clean.speed = update.speed
 			if (typeof update.label === 'string') clean.label = update.label
-			// Audio adjustments — clamped again in applyTimelineDiff's normalize
-			if (typeof update.gain === 'number') clean.gain = Math.max(0, Math.min(2, update.gain))
+			// Audio level: refused out of range rather than clamped (a dB value
+			// clamped to 0 is a silent clip). applyTimelineDiff clamps again.
+			const level = resolveGainRequest(update)
+			if (level.problem) droppedOps.push(`update ${update.id}: ${level.problem}; its level was left as it was`)
+			else if (level.gain !== undefined) clean.gain = level.gain
 			if (typeof update.fadeInSec === 'number') clean.fadeInSec = Math.max(0, update.fadeInSec)
 			if (typeof update.fadeOutSec === 'number') clean.fadeOutSec = Math.max(0, update.fadeOutSec)
 			// Everything below is clamped by the same shared code the UI uses, so

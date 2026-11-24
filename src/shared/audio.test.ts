@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-	bucketPeaks, dbToGain, formatLufs, gainToDb, isTrackRole, parseLoudness, peaksForRange, roleSpec, TRACK_ROLES,
+	bucketPeaks, dbToGain, resolveGainRequest, formatLufs, gainToDb, isTrackRole, parseLoudness, peaksForRange, roleSpec, TRACK_ROLES,
 	waveformPath
 } from './audio'
 
@@ -105,5 +105,34 @@ describe('formatLufs', () => {
 		expect(formatLufs(-15.12)).toBe('−15.1 LUFS')
 		expect(formatLufs(null)).toBe('—')
 		expect(formatLufs(Number.NaN)).toBe('—')
+	})
+})
+
+describe('resolveGainRequest', () => {
+	it('takes a linear gain in range as it is', () => {
+		expect(resolveGainRequest({ gain: 0.5 })).toEqual({ gain: 0.5 })
+		expect(resolveGainRequest({ gain: 0 })).toEqual({ gain: 0 })
+		expect(resolveGainRequest({})).toEqual({})
+	})
+
+	it('refuses a negative gain instead of clamping it to silence, and points at gainDb', () => {
+		const r = resolveGainRequest({ gain: -3 })
+		expect(r.gain).toBeUndefined()
+		expect(r.problem).toMatch(/gainDb: -3/)
+	})
+
+	it('refuses a gain above 2', () => {
+		expect(resolveGainRequest({ gain: 6 }).problem).toMatch(/outside 0..2/)
+	})
+
+	it('converts gainDb to linear', () => {
+		expect(resolveGainRequest({ gainDb: -6 }).gain).toBeCloseTo(0.501, 3)
+		expect(resolveGainRequest({ gainDb: 0 }).gain).toBe(1)
+		expect(resolveGainRequest({ gainDb: 6 }).gain).toBeCloseTo(1.995, 3)
+	})
+
+	it('refuses gainDb out of range and both fields at once', () => {
+		expect(resolveGainRequest({ gainDb: -90 }).problem).toMatch(/to mute, use gain 0/)
+		expect(resolveGainRequest({ gain: 1, gainDb: -3 }).problem).toMatch(/give one/)
 	})
 })
