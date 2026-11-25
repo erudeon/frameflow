@@ -27,6 +27,9 @@ const MAX_BYTES = 16 * 1024 * 1024
 const GRACE_MS = 2000
 
 /** The whole family: a `studio` command is a wrapper, and its child does the work. */
+/** Commands running right now for an agent: stopped with the app, not left to finish behind it. */
+const running = new Set<ChildProcess>()
+
 const stopGroup = (child: ChildProcess, signal: NodeJS.Signals) => {
 	if (!child.pid) return
 	try { process.kill(-child.pid, signal) } catch { try { child.kill(signal) } catch { /* already gone */ } }
@@ -42,6 +45,7 @@ function run(argv: string[], timeoutMs: number): Promise<CommandResult> {
 	return new Promise((resolve) => {
 		const [file, args] = viaLoginShell(argv)
 		const child = spawn(file, args, { detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+		running.add(child)
 		const out: Buffer[] = []
 		const err: Buffer[] = []
 		let bytes = 0
@@ -51,6 +55,7 @@ function run(argv: string[], timeoutMs: number): Promise<CommandResult> {
 		const finish = (code: number | null, extra = '') => {
 			if (done) return
 			done = true
+			running.delete(child)
 			clearTimeout(timer)
 			clearTimeout(hard)
 			resolve({ code, stdout: Buffer.concat(out).toString('utf8'), stderr: Buffer.concat(err).toString('utf8') + extra, timedOut, overflow })
@@ -173,5 +178,7 @@ export function initStudio(): void {
 	app.on('before-quit', () => {
 		for (const { child } of started.values()) stopGroup(child, 'SIGTERM')
 		started.clear()
+		for (const child of running) stopGroup(child, 'SIGTERM')
+		running.clear()
 	})
 }

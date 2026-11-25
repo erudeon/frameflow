@@ -88,6 +88,11 @@ describe('show_studio_module never takes the window from under work in the edito
 		expect((o.content[0] as any).text).toMatch(/chat is running/)
 		expect(shown).toEqual([])
 	})
+	it('refuses when the editor does not answer: busy is not free', async () => {
+		const { o, shown } = await show({ sessionId: 's1', bridge: { getLiveProject: async () => { throw new Error('timed out') } } })
+		expect((o.content[0] as any).text).toMatch(/editor is busy/)
+		expect(shown).toEqual([])
+	})
 	it('shows it when nothing is in the way, and Edit itself is never refused', async () => {
 		expect((await show({ sessionId: 's1', rounds: { blockedFor: () => null, roundFor: () => null }, bridge: { getLiveProject: async () => null } })).shown).toEqual(['review'])
 		expect((await show({ sessionId: 's1', rounds: { blockedFor: () => 'held', roundFor: () => null } }, 'editor')).shown).toEqual(['editor'])

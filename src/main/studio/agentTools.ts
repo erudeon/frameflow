@@ -135,7 +135,13 @@ export function studioTools(deps: StudioToolDeps, modules: StudioModule[] = MODU
 				if (ctx?.rounds?.roundFor(ctx.sessionId)) {
 					return text('You hold a round on the project in the editor. End it (end_round) before taking the window elsewhere.', 'refused: a round is open', true)
 				}
-				const live = await ctx?.bridge?.getLiveProject?.().catch(() => null)
+				// An editor that does not answer is busy, not free: refuse, as the editor's own tools do.
+				let live: { chatBusy?: boolean } | null | undefined
+				try {
+					live = await ctx?.bridge?.getLiveProject?.()
+				} catch {
+					return text('The editor is busy and did not answer. Try again in a moment.', 'refused: the editor is busy', true)
+				}
 				if (live?.chatBusy) return text('FrameFlow\'s own chat is running a prompt on the open project. Wait for it to finish.', 'refused: the chat is running', true)
 			}
 			if (!deps.show || !deps.show(m.id)) return text('FrameFlow has no window open to show it in.', 'no window', true)
