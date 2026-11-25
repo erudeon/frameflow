@@ -1,0 +1,186 @@
+{
+	"systeminfo": "WHISPER : VITISAI = 0 | COREML = 0 | OPENVINO = 0 | MTL : EMBED_LIBRARY = 1 | CPU : NEON = 1 | ARM_FMA = 1 | DOTPROD = 1 | ACCELERATE = 1 | OPENMP = 1 | REPACK = 1 | ",
+	"model": {
+		"type": "large",
+		"multilingual": true,
+		"vocab": 51866,
+		"audio": {
+			"ctx": 1500,
+			"state": 1280,
+			"head": 20,
+			"layer": 32
+		},
+		"text": {
+			"ctx": 448,
+			"state": 1280,
+			"head": 20,
+			"layer": 4
+		},
+		"mels": 128,
+		"ftype": 1
+	},
+	"params": {
+		"model": "models/ggml-large-v3-turbo.bin",
+		"language": "auto",
+		"translate": false
+	},
+	"result": {
+		"language": "en"
+	},
+	"transcription": [
+		{
+			"timestamps": {
+				"from": "00:00:00,000",
+				"to": "00:00:00,000"
+			},
+			"offsets": {
+				"from": 0,
+				"to": 0
+			},
+			"text": ""
+		},
+		{
+			"timestamps": {
+				"from": "00:00:00,000",
+				"to": "00:00:02,000"
+			},
+			"offsets": {
+				"from": 0,
+				"to": 2000
+			},
+			"text": " uh"
+		},
+		{
+			"timestamps": {
+				"from": "00:00:02,000",
+				"to": "00:00:02,220"
+			},
+			"offsets": {
+				"from": 2000,
+				"to": 2220
+			},
+			"text": " dj"
+		},
+		{
+			"timestamps": {
+				"from": "00:00:02,220",
+				"to": "00:00:03,020"
+			},
+			"offsets": {
+				"from": 2220,
+				"to": 3020
+			},
+			"text": " requests"
+		},
+		{
+			"timestamps": {
+				"from": "00:00:03,020",
+				"to": "00:00:03,360"
+			},
+			"offsets": {
+				"from": 3020,
+				"to": 3360
+			},
+			"text": " uh"
+		},
+		{
+			"timestamps": {
+				"from": "00:00:03,360",
+				"to": "00:00:04,510"
+			},
+			"offsets": {
+				"from": 3360,
+				"to": 4510
+			},
+			"text": " disqualify"
+		},
+		{
+			"timestamps": {
+				"from": "00:00:04,510",
+				"to": "00:00:05,080"
+			},
+			"offsets": {
+				"from": 4510,
+				"to": 5080
+			},
+			"text": " i'm"
+		},
+		{
+			"timestamps": {
+				"from": "00:00:05,080",
+				"to": "00:00:05,320"
+			},
+			"offsets": {
+				"from": 5080,
+				"to": 5320
+			},
+			"text": " just"
+		},
+		{
+			"timestamps": {
+				"from": "00:00:05,320",
+				"to": "00:00:06,340"
+			},
+			"offsets": {
+				"from": 5320,
+				"to": 6340
+			},
+			"text": " recording"
+		},
+		{
+			"timestamps": {
+				"from": "00:00:06,340",
+				"to": "00:00:06,950"
+			},
+			"offsets": {
+				"from": 6340,
+				"to": 6950
+			},
+			"text": " this"
+		},
+		{
+			"timestamps": {
+				"from": "00:00:06,950",
+				"to": "00:00:07,200"
+			},
+			"offsets": {
+				"from": 6950,
+				"to": 7200
+			},
+			"text": " for"
+		},
+		{
+			"timestamps": {
+				"from": "00:00:07,200",
+				"to": "00:00:07,380"
+			},
+			"offsets": {
+				"from": 7200,
+				"to": 7380
+			},
+			"text": " the"
+		},
+		{
+			"timestamps": {
+				"from": "00:00:07,380",
+				"to": "00:00:07,490"
+			},
+			"offsets": {
+				"from": 7380,
+				"to": 7490
+			},
+			"text": " ai"
+		},
+		{
+			"timestamps": {
+				"from": "00:00:07,490",
+				"to": "00:00:07,900"
+			},
+			"offsets": {
+				"from": 7490,
+				"to": 7900
+			},
+			"text": " editor"
+		}
+	]
+}

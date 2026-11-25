@@ -7,10 +7,11 @@ import type { AudioInspection } from '@shared/audioFeatures'
 import { normaliseRecipe, presetOf, recipeKey, soundLength, type SoundRecipe } from '@shared/synth'
 import type { AudioProvenance, GenerateRequest, ProviderId, SpendPolicy } from '@shared/audioProviders'
 import type { ObjectTrack } from '@shared/tracking'
+import type { ClipTag, Story, Word } from '@shared/story'
 import type { FollowRequest } from './bridge'
 import type {
 	EditorBridge, ExportStatus, InspectOptions, InspectReport, LiveProject, MediaSource, ProjectSummary, RevisionSummary,
-	SoundReport, TurnCommit
+	SoundReport, StoryWords, TranscriptWriteResult, TurnCommit
 } from './bridge'
 
 /**
@@ -51,6 +52,18 @@ export function makeDoc(): EditorDocument {
 		historyRef: { currentStepId: 'step-0', stepCount: 0 }
 	}
 }
+
+/** Timed words from (start, text) pairs: each word runs until just before the next, or 0.4 s. */
+export function timedWords(pairs: Array<[number, string]>): Word[] {
+	return pairs.map(([start, text], i) => ({ text, start, end: Math.min(start + 0.4, pairs[i + 1]?.[0] ?? Infinity) - (pairs[i + 1] ? 0.02 : 0) }))
+}
+
+/** What greeting_team.mp4 says, word by word: the same lines readTranscripts gives. */
+export const TEAM_WORDS: Word[] = timedWords([
+	[1, 'Hello'], [1.4, 'and'], [1.6, 'welcome'], [2.1, 'to'], [2.3, 'the'], [2.5, 'team.'],
+	[21, 'How'], [21.3, 'much'], [21.6, 'faster'], [22.1, 'is'], [22.3, 'triage'], [22.9, 'now?'],
+	[24.2, 'Three'], [24.6, 'times'], [25, 'faster.']
+])
 
 /** A 1×1 PNG, enough to prove an image travels. */
 export const PIXEL = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=='
@@ -258,6 +271,35 @@ export class FakeEditor implements EditorBridge {
 
 	async findSilences() {
 		return [{ start: 9.5, end: 10.4 }, { start: 19.2, end: 20.1 }]
+	}
+
+	/** Each clip's words and quiet, by asset id, as the Story view would read them. */
+	storyWordsByAsset: Record<string, StoryWords> = {
+		team: { words: TEAM_WORDS, silences: [{ start: 3, end: 20.9 }, { start: 23.3, end: 24.15 }, { start: 25.45, end: 30 }] }
+	}
+	async storyWords(_project: LiveProject, assetId: string): Promise<StoryWords> {
+		return this.storyWordsByAsset[assetId] ?? { words: [], silences: null }
+	}
+
+	/** How many times the stories were handed to the editor. */
+	storyWrites = 0
+	async setStories(_project: LiveProject, stories: Story[], clipTags?: Record<string, ClipTag>) {
+		this.storyWrites++
+		this.doc.stories = JSON.parse(JSON.stringify(stories))
+		if (clipTags) this.doc.clipTags = JSON.parse(JSON.stringify(clipTags))
+	}
+
+	/** Transcript imports and local transcriptions asked for, in order. */
+	transcriptJobs: Array<{ kind: 'import' | 'local'; assetId: string; filePath?: string }> = []
+	transcriptResult: TranscriptWriteResult = { ok: true, words: 15 }
+	async importTranscript(_project: LiveProject, assetId: string, filePath: string): Promise<TranscriptWriteResult> {
+		this.transcriptJobs.push({ kind: 'import', assetId, filePath })
+		return this.transcriptResult
+	}
+	async transcribeLocal(_project: LiveProject, assetId: string, onProgress?: (percent: number, label: string) => void): Promise<TranscriptWriteResult> {
+		this.transcriptJobs.push({ kind: 'local', assetId })
+		onProgress?.(50, 'Transcribing on this Mac… 50%')
+		return this.transcriptResult
 	}
 
 	sheetTimes: number[][] = []

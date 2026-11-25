@@ -1334,6 +1334,9 @@ export const useEditorStore = defineStore('editor', () => {
 				currentRevisionId: doc.value.currentRevisionId,
 				motionKits: doc.value.motionKits ?? [],
 				multicams: doc.value.multicams ?? [],
+				// Story (docs/story.md): renderer-owned like markers
+				stories: doc.value.stories ?? [],
+				clipTags: doc.value.clipTags ?? {},
 				// `?? false` because JSON.stringify drops an undefined, and the main
 				// handler would then read the patch as "no opinion" and keep the old
 				// value — the same trap the cleared-transition bug fell into.
@@ -3383,6 +3386,19 @@ export const useEditorStore = defineStore('editor', () => {
 		markDirty()
 	}
 
+	// ===== Story (docs/story.md): picks across takes, NOT undoable like markers (each story keeps its own history) =====
+	const storyOpen = ref(false)
+	const setStories = (stories: import('@shared/story').Story[]) => {
+		if (!doc.value) return
+		doc.value.stories = stories
+		markDirty()
+	}
+	const setClipTags = (tags: Record<string, import('@shared/story').ClipTag>) => {
+		if (!doc.value) return
+		doc.value.clipTags = tags
+		markDirty()
+	}
+
 	const removeMarker = (id: string) => {
 		if (!doc.value?.markers) return
 		doc.value.markers = doc.value.markers.filter((m) => m.id !== id)
@@ -3597,7 +3613,10 @@ export const useEditorStore = defineStore('editor', () => {
 		timelineMeta: doc.value!.timelineMeta,
 		markers: doc.value!.markers || [],
 		motionKits: doc.value!.motionKits ?? [],
-		multicams: doc.value!.multicams ?? []
+		multicams: doc.value!.multicams ?? [],
+		// kept for the record only: switching revisions never rolls picks back (a timeline undo must not erase a story)
+		stories: doc.value!.stories ?? [],
+		clipTags: doc.value!.clipTags ?? {}
 	})
 
 	/** Push to the sidecar and mirror the assigned seq back (awaited — cards need real V numbers). */
@@ -4415,6 +4434,7 @@ export const useEditorStore = defineStore('editor', () => {
 	}
 
 	return {
+		storyOpen, setStories, setClipTags,
 		// state
 		threadId,
 		thread,

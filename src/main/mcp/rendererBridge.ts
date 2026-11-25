@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain, nativeImage } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeImage } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { emitTurnUpdate, persistTurn } from '../editor/prompt'
 import { renderExactFrame } from '../editor/preview'
@@ -31,6 +31,7 @@ import { computeContentEnd } from '../../shared/timeline'
 import { followObject, scanFaces, type Tile } from '../tracking'
 import { deleteTrack, listTracks, saveTrack } from '../tracking/store'
 import type { TrackSheet } from './bridge'
+import { getStoryWords, importAssetTranscript, transcribeAssetLocally } from '../story/service'
 
 /**
  * The bridge to the renderer, whose Pinia store owns the live timeline.
@@ -450,6 +451,36 @@ export const rendererBridge: EditorBridge = {
 		const deleted = deleteTrack(trackingSource(project, track.assetId).dir, track.id)
 		if (deleted) tracksChanged(project.threadId)
 		return deleted
+	},
+
+	storyWords(project, assetId, options) {
+		return getStoryWords(project.threadId, assetId, options)
+	},
+
+	/**
+	 * Stories are the editor's (renderer-owned, outside undo, like markers): they go to it as an `editor-set-stories`
+	 * request on the mcp-request channel and it answers once it holds them. An editor that does not know the request
+	 * answers "Unknown request", so a write is never silently lost.
+	 */
+	async setStories(project, stories, clipTags) {
+		let answer: { ok?: boolean; error?: string } | undefined
+		try {
+			answer = await request('editor-set-stories', { threadId: project.threadId, stories, ...(clipTags ? { clipTags } : {}) })
+		} catch (error: any) {
+			if (/Unknown request/.test(error?.message || '')) {
+				throw new ToolError('This FrameFlow build cannot take stories from an agent yet (its editor does not handle editor-set-stories). Nothing was changed.')
+			}
+			throw error
+		}
+		if (answer && answer.ok === false) throw new ToolError(answer.error || 'The editor did not take the stories. Nothing was changed.')
+	},
+
+	importTranscript(project, assetId, filePath) {
+		return importAssetTranscript(project.threadId, assetId, filePath)
+	},
+
+	transcribeLocal(project, assetId, onProgress) {
+		return transcribeAssetLocally(project.threadId, assetId, { userDataDir: app.getPath('userData'), onProgress })
 	}
 }
 
