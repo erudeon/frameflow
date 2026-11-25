@@ -73,3 +73,42 @@ describe('toolInputSchema', () => {
 		expect(MODULES.filter((m) => m.agentTool).map((m) => m.agentTool!.name)).toEqual(['library_find', 'review_notes'])
 	})
 })
+
+describe('buildArgv, the edges', () => {
+	const find = findModule('library')!.agentTool!
+	const notes = findModule('review')!.agentTool!
+	it('keeps a count inside its bounds and takes only a number or digits', () => {
+		for (const bad of [0, -1, 1.5, 1e9, 51, true, [5], ' ', '5x', '1e2']) {
+			expect(() => buildArgv(find, { query: 'x', count: bad }), String(bad)).toThrow(/whole number from 1 to 50/)
+		}
+		expect(buildArgv(find, { query: 'x', count: '7' }).at(-1)).toBe('7')
+		expect(buildArgv(find, { query: 'x', count: 50 }).at(-1)).toBe('50')
+	})
+	it('refuses a line break, a control character and a dash behind spaces', () => {
+		expect(() => buildArgv(find, { query: 'a\nb' })).toThrow(/line break/)
+		expect(() => buildArgv(find, { query: 'a\u0000b' })).toThrow(/control character/)
+		expect(() => buildArgv(find, { query: '   --all' })).toThrow(/may not start with "-"/)
+	})
+	it('wants a full path where a path is asked for', () => {
+		expect(() => buildArgv(notes, { piece: 'runs/x' })).toThrow(/full path/)
+		expect(buildArgv(notes, { piece: '/Users/a/piece' })).toEqual(['studio', 'review', 'notes', '/Users/a/piece', '--json'])
+	})
+	it('puts the bounds in the schema an agent is shown', () => {
+		expect((toolInputSchema(find) as any).properties.count).toMatchObject({ minimum: 1, maximum: 50, default: 10 })
+	})
+})
+
+describe('every command in the list is the studio command', () => {
+	it('for tools and for pages', () => {
+		for (const m of MODULES) {
+			if (m.agentTool) expect(m.agentTool.argv[0], m.id).toBe('studio')
+			if (m.page?.start) expect(m.page.start[0], m.id).toBe('studio')
+		}
+	})
+	it('and the list refuses any other', () => {
+		const base: StudioModule = { id: 'x', label: 'X', icon: 'i', workspace: 'review', kind: 'page', about: '', page: { url: 'http://127.0.0.1:1/', startHint: 'x', start: ['rm', '-rf'] }, noAgentTool: 'none' }
+		expect(validateModules([base]).join(' ')).toMatch(/started by a `studio` command/)
+		const tool = { name: 't', description: '', argv: ['sh', '{a}'], params: { a: { type: 'string' as const, description: '' } } }
+		expect(validateModules([{ ...base, page: { url: 'http://127.0.0.1:1/', startHint: 'x' }, noAgentTool: undefined, agentTool: tool }]).join(' ')).toMatch(/runs a `studio` command/)
+	})
+})

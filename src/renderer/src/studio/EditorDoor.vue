@@ -58,9 +58,11 @@ onMounted(async () => {
 	loaded.value = true
 })
 
-const open = (id: string) => {
-	// The Story view is a view of the editor page: ask for it, then go there.
-	if (props.module.opensStory) editor.storyOpen = true
-	void router.push(`/editor/${id}`)
+const open = async (id: string) => {
+	await router.push(`/editor/${id}`)
+	// The Story view is a view of the editor page. Ask for it only once we are
+	// really there: the editor's set-up check may have sent us elsewhere, and a
+	// flag left behind would open Story over the next project.
+	if (props.module.opensStory && router.currentRoute.value.path === `/editor/${id}`) editor.storyOpen = true
 }
 </script>

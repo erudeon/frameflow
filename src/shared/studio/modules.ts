@@ -52,7 +52,15 @@ export interface AgentParam {
 	required?: boolean
 	/** Used when the agent leaves it out. */
 	default?: string | number
+	/** For an integer: the smallest and largest value taken (0 and 100000 when not given). */
+	min?: number
+	max?: number
+	/** For text: it must be a full path on this computer (it starts with "/"). */
+	absolutePath?: boolean
 }
+
+/** Every command a module names, for an agent or for its page, is this one program. */
+export const STUDIO_COMMAND = 'studio'
 
 export interface AgentToolSpec {
 	/** The MCP tool's name, snake_case. */
@@ -110,7 +118,7 @@ export const MODULES: StudioModule[] = [
 			argv: ['studio', 'lib', 'find', '{query}', '--json', '-n', '{count}'],
 			params: {
 				query: { type: 'string', description: 'What to look for, in plain words. Put an exact phrase in double quotes.', required: true },
-				count: { type: 'integer', description: 'How many moments to return (1 to 50).', default: 10 }
+				count: { type: 'integer', description: 'How many moments to return (1 to 50).', default: 10, min: 1, max: 50 }
 			},
 			timeoutSec: 90
 		}
@@ -131,7 +139,7 @@ export const MODULES: StudioModule[] = [
 				'Read them before changing a cut that was reviewed. The same as `studio review notes <piece> --json`.',
 			argv: ['studio', 'review', 'notes', '{piece}', '--json'],
 			params: {
-				piece: { type: 'string', description: 'The piece\'s folder (absolute path), the one that holds its storyboard.json.', required: true }
+				piece: { type: 'string', description: 'The piece\'s folder (absolute path), the one that holds its storyboard.json.', required: true, absolutePath: true }
 			},
 			timeoutSec: 30
 		}
@@ -177,6 +185,7 @@ export function validateModules(modules: StudioModule[] = MODULES): string[] {
 		if (m.kind === 'page') {
 			if (!m.page) problems.push(`${m.id}: a page module needs its page.`)
 			else if (!isLoopbackUrl(m.page.url)) problems.push(`${m.id}: ${m.page.url} is not a page on this computer.`)
+			if (m.page?.start && m.page.start[0] !== STUDIO_COMMAND) problems.push(`${m.id}: a page is started by a \`${STUDIO_COMMAND}\` command, nothing else.`)
 		}
 		if (m.kind === 'panel' && !m.panel) problems.push(`${m.id}: a panel module names its panel.`)
 		if (!!m.agentTool === !!m.noAgentTool) problems.push(`${m.id}: give its agent tool, or say why it has none (one of the two).`)
@@ -186,6 +195,7 @@ export function validateModules(modules: StudioModule[] = MODULES): string[] {
 		if (toolNames.has(tool.name)) problems.push(`Two tools are called "${tool.name}".`)
 		toolNames.add(tool.name)
 		if (!tool.argv.length || PLACEHOLDER.test(tool.argv[0])) problems.push(`${m.id}: the command itself is fixed, never a parameter.`)
+		else if (tool.argv[0] !== STUDIO_COMMAND) problems.push(`${m.id}: a tool runs a \`${STUDIO_COMMAND}\` command, nothing else.`)
 		for (const part of tool.argv) {
 			const name = PLACEHOLDER.exec(part)?.[1]
 			if (name && !tool.params[name]) problems.push(`${m.id}: {${name}} has no parameter.`)
@@ -213,8 +223,11 @@ export function buildArgv(tool: AgentToolSpec, args: Record<string, unknown>): s
 			throw new Error(`${tool.name} needs "${name}": ${spec.description}`)
 		}
 		if (spec.type === 'integer') {
-			const n = typeof raw === 'number' ? raw : Number(raw)
-			if (!Number.isInteger(n) || n < 0 || n > 100000) throw new Error(`${tool.name}: "${name}" must be a whole number.`)
+			// A number, or digits only: `true`, `[5]` and " " all turn into numbers if asked nicely.
+			const n = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : NaN
+			const min = spec.min ?? 0
+			const max = spec.max ?? 100000
+			if (!Number.isInteger(n) || n < min || n > max) throw new Error(`${tool.name}: "${name}" must be a whole number from ${min} to ${max}.`)
 			return String(n)
 		}
 		if (typeof raw !== 'string') throw new Error(`${tool.name}: "${name}" must be text.`)
@@ -222,6 +235,9 @@ export function buildArgv(tool: AgentToolSpec, args: Record<string, unknown>): s
 		if (!value) throw new Error(`${tool.name} needs "${name}": ${spec.description}`)
 		if (value.startsWith('-')) throw new Error(`${tool.name}: "${name}" may not start with "-".`)
 		if (value.length > 2000) throw new Error(`${tool.name}: "${name}" is too long.`)
+		// eslint-disable-next-line no-control-regex
+		if (/[\u0000-\u001f\u007f]/.test(value)) throw new Error(`${tool.name}: "${name}" may not hold a line break or a control character.`)
+		if (spec.absolutePath && !value.startsWith('/')) throw new Error(`${tool.name}: "${name}" must be a full path (it starts with "/").`)
 		return value
 	})
 }
@@ -230,7 +246,12 @@ export function buildArgv(tool: AgentToolSpec, args: Record<string, unknown>): s
 export function toolInputSchema(tool: AgentToolSpec): Record<string, unknown> {
 	const properties: Record<string, unknown> = {}
 	for (const [name, spec] of Object.entries(tool.params)) {
-		properties[name] = { type: spec.type, description: spec.description, ...(spec.default !== undefined ? { default: spec.default } : {}) }
+		properties[name] = {
+			type: spec.type,
+			description: spec.description,
+			...(spec.default !== undefined ? { default: spec.default } : {}),
+			...(spec.type === 'integer' ? { minimum: spec.min ?? 0, maximum: spec.max ?? 100000 } : {})
+		}
 	}
 	return {
 		type: 'object',

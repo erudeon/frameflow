@@ -10,7 +10,8 @@ import { MODULES, WORKSPACES, buildArgv, findModule, toolInputSchema, type Studi
  *
  * None of them touches the editor's project, so none claims a round or waits
  * in the write queue: they answer with no project open and while another agent
- * holds the editor.
+ * holds the editor. The one that moves the window (show_studio_module) follows
+ * the editor's own rule for that: never from under a round or a running chat.
  *
  * No Electron here (as in mcp/tools.ts): what needs the app is handed in, so
  * the tests run these with fakes.
@@ -21,6 +22,8 @@ export interface CommandResult {
 	stdout: string
 	stderr: string
 	timedOut?: boolean
+	/** It printed more than is kept: the run was stopped. */
+	overflow?: boolean
 }
 
 export interface StudioToolDeps {
@@ -33,6 +36,15 @@ export interface StudioToolDeps {
 }
 
 const MAX_OUTPUT = 200_000
+
+// One command at a time, whoever asks: each run may load a model, and twenty
+// searches at once is how a Mac short on memory goes down.
+let line: Promise<unknown> = Promise.resolve()
+const inTurn = <T>(job: () => Promise<T>): Promise<T> => {
+	const next = line.then(job, job)
+	line = next.catch(() => undefined)
+	return next
+}
 
 const text = (value: string, detail: string, isError = false): ToolOutcome => ({
 	content: [{ type: 'text', text: value }],
@@ -65,7 +77,10 @@ function moduleTool(m: StudioModule, deps: StudioToolDeps): ToolDef {
 			} catch (error: any) {
 				return text(error?.message || 'That call cannot be run.', 'refused the arguments', true)
 			}
-			const result = await deps.run(argv, (spec.timeoutSec ?? 60) * 1000)
+			const result = await inTurn(() => deps.run(argv, (spec.timeoutSec ?? 60) * 1000))
+			if (result.overflow) {
+				return text(`${argv.slice(0, 3).join(' ')} printed more than can be taken. Ask for less.`, 'too much output', true)
+			}
 			if (result.timedOut) {
 				return text(`${argv.slice(0, 3).join(' ')} did not answer within ${spec.timeoutSec ?? 60} s.`, 'timed out', true)
 			}
@@ -97,10 +112,12 @@ export function studioTools(deps: StudioToolDeps, modules: StudioModule[] = MODU
 
 	const showModule: ToolDef = {
 		name: 'show_studio_module',
-		permission: 'read',
+		// It moves the person's window, as open_project does: the same permission, the same rule.
+		permission: 'edit',
 		description:
 			'Put a studio module in front of the person: the window switches to its workspace and shows it (the review page, the ' +
-			'library, the monitor). Use it when you want them to look at something. It changes nothing in any project.',
+			'library, the monitor). Use it when you want them to look at something. It changes nothing in any project, but it ' +
+			'takes the window off the editor: refused while an agent holds a round (end yours first) or the chat is running.',
 		inputSchema: {
 			type: 'object',
 			properties: { module: { type: 'string', description: 'A module id from list_studio_modules.' } },
@@ -108,9 +125,19 @@ export function studioTools(deps: StudioToolDeps, modules: StudioModule[] = MODU
 			additionalProperties: false
 		} as any,
 		title: (args) => `show ${args.module ?? ''}`,
-		async run(args) {
+		async run(args, ctx) {
 			const m = findModule(String(args.module ?? ''), modules)
 			if (!m) return text(`No module is called "${args.module}". Modules: ${modules.map((x) => x.id).join(', ')}.`, 'unknown module', true)
+			// Leaving the editor takes the project off the screen, and the editor's tools work on the project on screen.
+			if (m.workspace !== 'edit') {
+				const blocked = ctx?.rounds?.blockedFor(ctx.sessionId, null)
+				if (blocked) return text(blocked, 'refused: another agent holds the editor', true)
+				if (ctx?.rounds?.roundFor(ctx.sessionId)) {
+					return text('You hold a round on the project in the editor. End it (end_round) before taking the window elsewhere.', 'refused: a round is open', true)
+				}
+				const live = await ctx?.bridge?.getLiveProject?.().catch(() => null)
+				if (live?.chatBusy) return text('FrameFlow\'s own chat is running a prompt on the open project. Wait for it to finish.', 'refused: the chat is running', true)
+			}
 			if (!deps.show || !deps.show(m.id)) return text('FrameFlow has no window open to show it in.', 'no window', true)
 			const up = m.page && deps.pageUp ? await deps.pageUp(m.id) : undefined
 			return text(

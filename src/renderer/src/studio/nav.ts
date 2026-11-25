@@ -42,7 +42,12 @@ export const pathOfModule = (moduleId: string): string | null => {
 	return m.workspace === 'edit' ? lastEditPath.value : `${STUDIO_PREFIX}${m.workspace}/${m.id}`
 }
 
+let following = false
+
+/** Once per window: a hot reload mounts the bar again, and must not add a second hook. */
 export const followRouter = (router: Router) => {
 	rememberEditPath(router.currentRoute.value.path)
+	if (following) return
+	following = true
 	router.afterEach((to) => rememberEditPath(to.fullPath))
 }

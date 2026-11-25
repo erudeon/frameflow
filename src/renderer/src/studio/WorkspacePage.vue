@@ -1,6 +1,6 @@
 <template>
 	<!-- One studio workspace: its modules on the left, the chosen one filling the rest. -->
-	<div class="h-full w-full flex min-h-0 bg-ground" data-testid="studio-workspace" :data-workspace="workspace.id">
+	<div v-if="valid" class="h-full w-full flex min-h-0 bg-ground" data-testid="studio-workspace" :data-workspace="workspace.id">
 		<aside class="w-52 shrink-0 hair-r flex flex-col min-h-0">
 			<div class="px-3 pt-3 pb-2">
 				<h1 class="font-heading font-semibold text-[15px] tracking-tight">{{ workspace.label }}</h1>
@@ -53,6 +53,8 @@ import EditorDoor from './EditorDoor.vue'
 const route = useRoute()
 const router = useRouter()
 
+/** Edit is the app itself, and an unknown name is nobody's: neither is drawn here, not even for one frame (a panel may open a camera). */
+const valid = computed(() => isWorkspaceId(route.params.workspace) && route.params.workspace !== 'edit')
 const workspace = computed(() => {
 	const id = route.params.workspace
 	return WORKSPACES.find((w) => w.id === id) ?? WORKSPACES[0]
@@ -61,10 +63,8 @@ const modules = computed(() => modulesOf(workspace.value.id))
 const current = computed(() => modules.value.find((m) => m.id === route.params.module) ?? modules.value[0])
 const panel = computed(() => (current.value?.panel ? PANELS[current.value.panel] : undefined))
 
-// Edit is the app itself, and an unknown name is nobody's: neither is drawn here.
 watchEffect(() => {
-	const id = route.params.workspace
-	if (id === 'edit' || !isWorkspaceId(id)) void router.replace(lastEditPath.value)
+	if (!valid.value) void router.replace(lastEditPath.value)
 })
 
 const pick = (moduleId: string) => {

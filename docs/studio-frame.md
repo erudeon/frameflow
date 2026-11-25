@@ -29,7 +29,10 @@ refuse an entry with neither. Two tools come with the list itself: `list_studio_
 Rules the tests hold:
 - A page is on this computer only (http, 127.0.0.1 or localhost).
 - A tool's command is fixed. A parameter is one whole argument, never part of one, and may not start with `-`.
+- A tool's command is `studio` and nothing else. A whole number has bounds; text may not hold a line break.
 - These tools never claim the editor's project, so they answer with no project open and while another agent holds it.
+  One command runs at a time. `show_studio_module` moves the window, so it needs the edit permission and is refused
+  while an agent holds a round or the chat is running, as `open_project` is.
 
 The work is never in the app. A module is a view over a `studio` command or a page that command serves, so an agent
 can do the same work with no window.

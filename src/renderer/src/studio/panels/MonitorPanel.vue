@@ -42,7 +42,7 @@
 			<p v-if="!cameras.length" class="px-1.5 text-[10px] leading-snug text-zinc-400">
 				No camera found. Plug the studio camera in on its cable and switch it to Webcam.
 			</p>
-			<button v-for="camera in cameras" :key="camera.deviceId"
+			<button v-for="(camera, index) in cameras" :key="camera.deviceId || `unnamed-${index}`"
 				class="group w-full flex items-center gap-2 h-[38px] px-1.5 rounded hair-t first:border-t-0 text-left transition hover:bg-primary/[0.06]"
 				:class="{ 'bg-primary/[0.10]': camera.deviceId === activeId }"
 				:disabled="!allowed" :aria-pressed="camera.deviceId === activeId"
@@ -103,6 +103,8 @@ let pickedByPerson = false
 let stopped = false
 /** Each open gets a number, so an answer that arrives late (another camera was picked, the tab closed) is dropped. */
 let openSeq = 0
+/** The panel has left the screen: nothing may open a camera for it any more, however late an answer arrives. */
+let gone = false
 let frameCallback = 0
 let windowStart = 0
 let windowFrames = 0
@@ -188,7 +190,7 @@ const readable = (e: any): string => {
 }
 
 const open = async (camera: CameraInfo, byPerson = false) => {
-	if (!allowed.value || !camera.deviceId) return
+	if (gone || !allowed.value || !camera.deviceId) return
 	release()
 	const seq = openSeq
 	pickedByPerson = byPerson
@@ -229,7 +231,9 @@ const refresh = async (ask: boolean) => {
 	} catch {
 		access.value = 'unknown'
 	}
+	if (gone) return // the macOS question can be answered long after the panel was left
 	await listCameras()
+	if (gone) return
 	if (!allowed.value) {
 		release()
 		return
@@ -254,6 +258,7 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+	gone = true
 	navigator.mediaDevices.removeEventListener('devicechange', onDeviceChange)
 	release()
 })

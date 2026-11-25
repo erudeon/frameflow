@@ -98,7 +98,7 @@ function createWindow(): void {
 		// laptop screen, so the app still tiles beside another window (the chat folds to
 		// its strip there); 560 leaves a picture above the timeline at its default height.
 		minWidth: 720,
-		minHeight: 560,
+		minHeight: 592, // the editor's 560, plus the workspace bar above it
 		show: false,
 		autoHideMenuBar: true,
 		webPreferences: {

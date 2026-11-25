@@ -41,7 +41,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import type { StudioModule } from '@shared/studio/modules'
 
 /**
@@ -58,12 +58,22 @@ const starting = ref(false)
 const error = ref('')
 const frameKey = ref(0)
 let timer: ReturnType<typeof setInterval> | undefined
+/** A page that is up is not taken away for one slow answer (it may be busy serving a video): three in a row. */
+const MISSES_BEFORE_DOWN = 3
+let misses = 0
 
 const check = async () => {
+	let answered = false
 	try {
-		up.value = !!(await studio.pageStatus(props.module.id))
-		if (up.value) error.value = ''
+		answered = !!(await studio.pageStatus(props.module.id))
 	} catch {
+		answered = false
+	}
+	if (answered) {
+		misses = 0
+		up.value = true
+		error.value = ''
+	} else if (!up.value || ++misses >= MISSES_BEFORE_DOWN) {
 		up.value = false
 	}
 }
@@ -85,12 +95,10 @@ const start = async () => {
 
 const openOutside = () => { window.open(page.value.url, '_blank') }
 
-watch(() => props.module.id, () => { up.value = false; error.value = ''; void check() })
-
 onMounted(() => {
 	void check()
-	// A page can stop or start behind the app's back: keep looking, cheaply.
-	timer = setInterval(check, 4000)
+	// A page can stop or start behind the app's back: keep looking, cheaply, and not while nobody can see it.
+	timer = setInterval(() => { if (!document.hidden) void check() }, 4000)
 })
 onBeforeUnmount(() => { if (timer) clearInterval(timer) })
 </script>
