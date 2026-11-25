@@ -266,6 +266,10 @@ const api = {
 		ipcRenderer.on('engine-activity', listener)
 		return () => ipcRenderer.removeListener('engine-activity', listener)
 	},
+	// Monitor: the operating system's answer on the camera. `ask` shows the macOS question once.
+	/** 'granted' | 'denied' | 'restricted' | 'not-determined' | 'unknown' */
+	cameraAccess: (ask = false) => ipcRenderer.invoke('monitor-camera-access', ask),
+	openCameraSettings: () => ipcRenderer.invoke('monitor-open-camera-settings'),
 	// The live-document bridge: main asks, the editor store answers.
 	onMcpRequest: (callback: (request: { id: string; kind: string; payload: any }) => void) => {
 		const listener = (_event: any, request: any) => callback(request)

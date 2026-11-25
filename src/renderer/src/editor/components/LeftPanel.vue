@@ -65,6 +65,9 @@
 				<EffectsPanel v-if="shownTab === 'effects'" class="flex-1 min-h-0 min-w-0" />
 				<TranscriptPanel v-if="shownTab === 'words'" class="flex-1 min-h-0 min-w-0" />
 				<SoundPanel v-if="shownTab === 'sound'" class="flex-1 min-h-0 min-w-0" />
+				<!-- Monitor holds a camera, so it is mounted only while it is the
+				     library on screen: Inspect, another tab or a collapse lets it go. -->
+				<MonitorPanel v-if="shownTab === 'monitor' && mode === 'library'" class="flex-1 min-h-0 min-w-0" />
 			</div>
 			<InspectorPanel v-if="mode === 'inspect'" class="flex-1 min-h-0 min-w-0" />
 		</section>
@@ -82,6 +85,7 @@ import MotionPanel from './MotionPanel.vue'
 import EffectsPanel from './EffectsPanel.vue'
 import TranscriptPanel from './TranscriptPanel.vue'
 import SoundPanel from './SoundPanel.vue'
+import MonitorPanel from './MonitorPanel.vue'
 import InspectorPanel from './InspectorPanel.vue'
 import SlimTooltip from '../../components/SlimTooltip.vue'
 import { isAdvancedTab, tabForMode, useEditorMode } from '../editorMode'
@@ -93,7 +97,7 @@ import { isAdvancedTab, tabForMode, useEditorMode } from '../editorMode'
  *
  * Collapse and resize stay with VideoEditorPage; this only routes the events.
  */
-export type LeftTab = 'media' | 'motion' | 'transitions' | 'effects' | 'words' | 'sound'
+export type LeftTab = 'media' | 'motion' | 'transitions' | 'effects' | 'words' | 'sound' | 'monitor'
 export type LeftMode = 'library' | 'inspect'
 
 const TABS: { value: LeftTab; label: string; icon: string }[] = [
@@ -102,7 +106,8 @@ const TABS: { value: LeftTab; label: string; icon: string }[] = [
 	{ value: 'transitions', label: 'Transitions', icon: 'tabler--transition-right' },
 	{ value: 'effects', label: 'Effects', icon: 'tabler--wand' },
 	{ value: 'words', label: 'Words', icon: 'tabler--text-caption' },
-	{ value: 'sound', label: 'Sound', icon: 'tabler--wave-square' }
+	{ value: 'sound', label: 'Sound', icon: 'tabler--wave-square' },
+	{ value: 'monitor', label: 'Monitor', icon: 'tabler--video' }
 ]
 
 const props = defineProps<{
