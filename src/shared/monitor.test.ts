@@ -11,7 +11,7 @@ describe('cameraKind', () => {
 		expect(cameraKind('FaceTime HD Camera (Built-in)')).toBe('builtin')
 	})
 	it('calls everything else other, phones included', () => {
-		expect(cameraKind('Dimalicious 17 Pro Camera')).toBe('other')
+		expect(cameraKind('Studio Phone A Camera')).toBe('other')
 		expect(cameraKind('OBS Virtual Camera')).toBe('other')
 		expect(cameraKind('')).toBe('other')
 	})
@@ -22,20 +22,20 @@ describe('cameraName', () => {
 		expect(cameraName('FaceTime HD Camera (3A71:F4B5)')).toBe('FaceTime HD Camera')
 		expect(cameraName('OsmoPocket3 (2ca3:0023)')).toBe('OsmoPocket3')
 		expect(cameraName('FaceTime HD Camera (Built-in)')).toBe('FaceTime HD Camera (Built-in)')
-		expect(cameraName('Dimalicious 17 Pro Camera')).toBe('Dimalicious 17 Pro Camera')
+		expect(cameraName('Studio Phone A Camera')).toBe('Studio Phone A Camera')
 	})
 })
 
 describe('pickAutoCamera', () => {
 	it('takes the studio camera over this computer', () => {
-		const picked = pickAutoCamera([cam('FaceTime HD Camera'), cam('Dimalicious 17 Pro Camera'), cam('OsmoPocket3')])
+		const picked = pickAutoCamera([cam('FaceTime HD Camera'), cam('Studio Phone A Camera'), cam('OsmoPocket3')])
 		expect(picked?.label).toBe('OsmoPocket3')
 	})
 	it('falls back to this computer', () => {
-		expect(pickAutoCamera([cam('Dimalicious 17 Pro Camera'), cam('FaceTime HD Camera')])?.label).toBe('FaceTime HD Camera')
+		expect(pickAutoCamera([cam('Studio Phone A Camera'), cam('FaceTime HD Camera')])?.label).toBe('FaceTime HD Camera')
 	})
 	it('never opens a phone or an unknown camera by itself', () => {
-		expect(pickAutoCamera([cam('Dimalicious 17 Pro Camera'), cam('Dimalicious 14 Pro Camera')])).toBeNull()
+		expect(pickAutoCamera([cam('Studio Phone A Camera'), cam('Studio Phone B Camera')])).toBeNull()
 	})
 	it('opens nothing while names are hidden', () => {
 		expect(pickAutoCamera([cam('', 'a'), cam('', 'b')])).toBeNull()
