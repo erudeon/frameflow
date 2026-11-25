@@ -60,6 +60,7 @@ import { normalizeEngineSettings } from '@shared/engines'
 import { execFile } from 'child_process'
 import { getFFmpegBinaryPath } from './ffmpeg'
 import { initMotionIpc } from './motion/ipc'
+import { initMonitorIpc } from './monitor/ipc'
 import { abortEngineTurn, initEngines, resetEngineConversation, runEnginePrompt } from './engine'
 
 const activePipelines = new Map<string, Pipeline>()
@@ -150,6 +151,7 @@ app.whenReady().then(() => {
 	// MCP agent access: off unless the user turned it on in Settings.
 	initAgentAccess()
 	initMotionIpc()
+	initMonitorIpc()
 	initEngines()
 
 	createWindow()
