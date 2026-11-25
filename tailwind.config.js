@@ -6,6 +6,8 @@ export default {
   content: [
     './src/renderer/index.html',
     './src/renderer/src/**/*.{vue,js,ts,jsx,tsx}',
+    // The studio's module list names its icons; the icon plugin only makes the ones it can see.
+    './src/shared/studio/**/*.ts',
   ],
   theme: {
     extend: {

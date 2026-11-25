@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { ThreadType } from '@shared/types'
+import './studio' // the studio layer's own door, `window.studio`
 
 const api = {
 	/** The real path of a file dropped on the window. */

@@ -61,6 +61,7 @@ import { execFile } from 'child_process'
 import { getFFmpegBinaryPath } from './ffmpeg'
 import { initMotionIpc } from './motion/ipc'
 import { registerStoryIpc } from './story/ipc'
+import { initStudio } from './studio'
 import { abortEngineTurn, initEngines, resetEngineConversation, runEnginePrompt } from './engine'
 
 const activePipelines = new Map<string, Pipeline>()
@@ -152,6 +153,7 @@ app.whenReady().then(() => {
 	initAgentAccess()
 	initMotionIpc()
 	registerStoryIpc()
+	initStudio()
 	initEngines()
 
 	createWindow()
