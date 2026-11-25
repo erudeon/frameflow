@@ -61,6 +61,7 @@ import { execFile } from 'child_process'
 import { getFFmpegBinaryPath } from './ffmpeg'
 import { initMotionIpc } from './motion/ipc'
 import { registerStoryIpc } from './story/ipc'
+import { initStudio } from './studio'
 import { abortEngineTurn, initEngines, resetEngineConversation, runEnginePrompt } from './engine'
 
 const activePipelines = new Map<string, Pipeline>()
@@ -97,7 +98,7 @@ function createWindow(): void {
 		// laptop screen, so the app still tiles beside another window (the chat folds to
 		// its strip there); 560 leaves a picture above the timeline at its default height.
 		minWidth: 720,
-		minHeight: 560,
+		minHeight: 592, // the editor's 560, plus the workspace bar above it
 		show: false,
 		autoHideMenuBar: true,
 		webPreferences: {
@@ -152,6 +153,7 @@ app.whenReady().then(() => {
 	initAgentAccess()
 	initMotionIpc()
 	registerStoryIpc()
+	initStudio()
 	initEngines()
 
 	createWindow()

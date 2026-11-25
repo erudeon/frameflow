@@ -10,6 +10,8 @@ import { AgentServer, type AgentServerEvent } from './server'
 import { installRendererBridge, lastProjectId, lastProjectTitle, rendererBridge } from './rendererBridge'
 import { initRoundIpc, roundBook } from './roundStore'
 import { requestedTokenFile, writeTokenFile } from './tokenFile'
+import { TOOLS } from './tools'
+import { studioAgentTools } from '../studio'
 
 /**
  * Agent access, wired to the app: the Settings card's IPC, the server's
@@ -91,7 +93,9 @@ async function start(): Promise<void> {
 		probeMotion: probeMotionPage,
 		onEvent: onServerEvent,
 		rounds: roundBook,
-		currentThreadId: () => lastProjectId
+		currentThreadId: () => lastProjectId,
+		// The editor's tools, then the ones the studio's module list gives (shared/studio/modules.ts).
+		tools: [...TOOLS, ...studioAgentTools()]
 	})
 	try {
 		const port = await next.start(AGENT_DEFAULT_PORT)
